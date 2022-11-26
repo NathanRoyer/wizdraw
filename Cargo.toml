@@ -1,6 +1,6 @@
 [package]
 name = "wizdraw"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
 description = "Tiny no_std crate to fill and stroke bezier curves"
@@ -12,3 +12,6 @@ categories = [ "rendering", "no-std" ]
 [dependencies]
 vek = { version = "0.15.8", default-features = false }
 num-traits = { version = "0.2.15", default-features = false, features = [ "libm" ] }
+
+[dev-dependencies]
+png = "0.17.7"
