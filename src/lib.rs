@@ -291,7 +291,8 @@ pub fn fill<T: Real + RelativeEq, const SSAA: usize>(
 
         let mut go_back = 0;
         for x in 0..mask_size.x {
-            if line[x] == 0 {
+            let not_last_point = x != (mask_size.x - 1);
+            if line[x] == 0 && not_last_point {
                 go_back += 1;
             } else {
                 let avg = ssaa_average::<_, _, SSAA>(x as isize, y as isize, is_inside_path);
