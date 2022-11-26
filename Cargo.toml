@@ -1,12 +1,13 @@
 [package]
 name = "wizdraw"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
 description = "Tiny no_std crate to fill and stroke bezier curves"
 license = "MIT"
-keywords = ["vector-graphics", "render", "svg"]
+keywords = [ "vector-graphics", "render", "svg", "no_std" ]
 repository = "https://github.com/NathanRoyer/wizdraw"
+categories = [ "rendering", "no-std" ]
 
 [dependencies]
 vek = { version = "0.15.8", default-features = false }

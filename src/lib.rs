@@ -96,6 +96,13 @@ fn is_inside<T: Real>(p: Vec2<T>, path: &[Vec2<T>]) -> bool {
     let mut winding_number = 0isize;
     for segment in path.windows(2) {
         let (s, e) = (segment[0], segment[1]);
+        /*
+        let dsp = s.distance_squared(p);
+        let dep = e.distance_squared(p);
+        if dsp < T::epsilon() || dep < T::epsilon() {
+            return true;
+        }
+        */
         let v1 = p - s;
         let v2 = e - s;
         let d = determinant(&v1, &v2);
@@ -135,6 +142,7 @@ pub fn rasterize<T: Real + RelativeEq>(
     stroke: Option<T>,
 ) {
     let two = T::from(2).unwrap();
+    let half = T::one() / two;
     let (half_stroke_width, offset) = match stroke {
         Some(w) => (w / two, w.to_isize().unwrap() + 2),
         None => (two, 2),
@@ -176,7 +184,8 @@ pub fn rasterize<T: Real + RelativeEq>(
         }
     }
     if stroke.is_none() {
-        let mut prev_x0 = match is_inside(Vec2::zero(), path) {
+        let fp = Vec2::from((half, half));
+        let mut prev_x0 = match is_inside(fp, path) {
             true => 255,
             false => 0,
         };
@@ -186,8 +195,8 @@ pub fn rasterize<T: Real + RelativeEq>(
             for x in 0..mask_size.x {
                 if mask[i + x] != 0 {
                     let p = Vec2::<T> {
-                        x: T::from(x).unwrap(),
-                        y: T::from(y).unwrap(),
+                        x: T::from(x).unwrap() + half,
+                        y: T::from(y).unwrap() + half,
                     };
                     prev = match is_inside(p, path) {
                         true => 255,
