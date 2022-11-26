@@ -204,13 +204,12 @@ pub fn stroke<T: Real + RelativeEq, const SSAA: usize>(
 
         let [min_x_px, min_y_px, max_x_px, max_y_px] = aabr(start, end, offset);
 
-        let mut accumulator_x = (min_y_px as usize) * mask_size.x;
         for y_px in min_y_px..max_y_px {
             if !(0..h).contains(&y_px) {
                 continue;
             }
 
-            let cov_line = &mut mask[accumulator_x..][..mask_size.x];
+            let cov_line = &mut mask[(y_px as usize) * mask_size.x..][..mask_size.x];
 
             let mut past = false;
             for x_px in min_x_px..max_x_px {
@@ -230,8 +229,6 @@ pub fn stroke<T: Real + RelativeEq, const SSAA: usize>(
                     break;
                 }
             }
-
-            accumulator_x += mask_size.x;
         }
     }
 }
@@ -262,13 +259,12 @@ pub fn fill<T: Real + RelativeEq, const SSAA: usize>(
         let (start, end) = (segment[0], segment[1]);
         let [min_x_px, min_y_px, max_x_px, max_y_px] = aabr(start, end, 3);
 
-        let mut accumulator_x = (min_y_px as usize) * mask_size.x;
         for y_px in min_y_px..max_y_px {
             if !(0..h).contains(&y_px) {
                 continue;
             }
 
-            let cov_line = &mut mask[accumulator_x..][..mask_size.x];
+            let cov_line = &mut mask[(y_px as usize) * mask_size.x..][..mask_size.x];
 
             for x_px in min_x_px..max_x_px {
                 if (0..w).contains(&x_px) {
@@ -278,8 +274,6 @@ pub fn fill<T: Real + RelativeEq, const SSAA: usize>(
                     }
                 }
             }
-
-            accumulator_x += mask_size.x;
         }
     }
 
