@@ -107,12 +107,6 @@ fn is_inside<T: Real>(p: Vec2<T>, path: &[Vec2<T>]) -> bool {
     for segment in path.windows(2) {
         let (s, e) = (segment[0], segment[1]);
 
-        /* let dsp = s.distance_squared(p);
-        let dep = e.distance_squared(p);
-        if dsp < T::epsilon() || dep < T::epsilon() {
-            return true;
-        } */
-
         let v1 = p - s;
         let v2 = e - s;
         let d = determinant(&v1, &v2);
@@ -161,6 +155,33 @@ fn ssaa_average
     ((255 * in_count) / (SSAA * SSAA)) as u8
 }
 
+#[inline(always)]
+fn sub_segments<T: Real + RelativeEq>(
+    start: Vec2<T>,
+    end: Vec2<T>,
+    process_sub_segment: &mut impl FnMut(Vec2<T>, Vec2<T>),
+    sub_segment_len: usize,
+) {
+    let length = start.distance(end);
+    if length > T::epsilon() {
+        let sub_segments = length / T::from(sub_segment_len).unwrap();
+
+        let mut last = start;
+        let mut next;
+        let unit = (end - start) / sub_segments;
+
+        let integer_multiples = sub_segments.trunc().to_usize().unwrap();
+        for _ in 0..integer_multiples {
+            next = last + unit;
+            process_sub_segment(last, next);
+            last = next;
+        }
+
+        next = last + unit * length.fract();
+        process_sub_segment(last, next);
+    }
+}
+
 /// Strokes a path to a byte mask
 ///
 /// The mask must have one byte per pixel.
@@ -189,8 +210,7 @@ pub fn stroke<T: Real + RelativeEq, const SSAA: usize>(
     let w = mask_size.x as isize;
     let h = mask_size.y as isize;
 
-    for segment in path.windows(2) {
-        let (start, end) = (segment[0], segment[1]);
+    let mut process_sub_segment = |start, end| {
         let segment = LineSegment2 {
             start,
             end,
@@ -230,6 +250,10 @@ pub fn stroke<T: Real + RelativeEq, const SSAA: usize>(
                 }
             }
         }
+    };
+
+    for segment in path.windows(2) {
+        sub_segments(segment[0], segment[1], &mut process_sub_segment, 5);
     }
 }
 
@@ -255,8 +279,7 @@ pub fn fill<T: Real + RelativeEq, const SSAA: usize>(
     let w = mask_size.x as isize;
     let h = mask_size.y as isize;
 
-    for segment in path.windows(2) {
-        let (start, end) = (segment[0], segment[1]);
+    let mut process_sub_segment = |start, end| {
         let [min_x_px, min_y_px, max_x_px, max_y_px] = aabr(start, end, 3);
 
         for y_px in min_y_px..max_y_px {
@@ -275,6 +298,10 @@ pub fn fill<T: Real + RelativeEq, const SSAA: usize>(
                 }
             }
         }
+    };
+
+    for segment in path.windows(2) {
+        sub_segments(segment[0], segment[1], &mut process_sub_segment, 5);
     }
 
     let is_inside_path = |p| is_inside(p, path);
