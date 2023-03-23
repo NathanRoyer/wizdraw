@@ -9,8 +9,10 @@ use vek::vec::Vec2;
 use vek::geom::Aabr;
 use vek::geom::LineSegment2;
 use vek::approx::RelativeEq;
+use core::ops::Add;
 use num_traits::real::Real;
 use num_traits::cast::NumCast;
+use num_traits::{Zero, One};
 
 fn find_longest_segment<T: Real + DivByTwo, const D: usize>(
     curve: &CubicBezier2<T>,
@@ -83,10 +85,7 @@ pub fn push_cubic_bezier_segments<T: Real + DivByTwo, const D: usize>(
     }
 }
 
-fn determinant<T: Real>(a: &Vec2<T>, b: &Vec2<T>) -> T {
-    a.x * b.y - a.y * b.x
-}
-
+#[inline(always)]
 fn aabr<T: Real>(start: Vec2<T>, end: Vec2<T>, offset: isize) -> [isize; 4] {
     let aabr = Aabr::<T> {
         min: Vec2::partial_min(start, end),
@@ -101,6 +100,12 @@ fn aabr<T: Real>(start: Vec2<T>, end: Vec2<T>, offset: isize) -> [isize; 4] {
     ]
 }
 
+#[inline(always)]
+fn determinant<T: Real>(a: &Vec2<T>, b: &Vec2<T>) -> T {
+    a.x * b.y - a.y * b.x
+}
+
+#[inline(always)]
 fn is_inside<T: Real>(p: Vec2<T>, path: &[Vec2<T>]) -> bool {
     let mut winding_number = 0isize;
 
@@ -124,6 +129,21 @@ fn is_inside<T: Real>(p: Vec2<T>, path: &[Vec2<T>]) -> bool {
     winding_number != 0
 }
 
+// directly copied from vek's source; only added #[inline(always)]
+#[inline(always)]
+fn projected_point<T>(this: LineSegment2<T>, p: Vec2<T>) -> Vec2<T> where T: Real + Add<T, Output=T> + RelativeEq {
+    let len_sq = this.start.distance_squared(this.end);
+
+    if len_sq.relative_eq(&Zero::zero(), T::default_epsilon(), T::default_max_relative()) {
+        this.start
+    } else {
+        let t = ((p - this.start).dot(this.end - this.start) / len_sq)
+            .max(Zero::zero())
+            .min(One::one());
+        this.start + (this.end - this.start) * t
+    }
+}
+
 fn ssaa_point<T: Real, const SSAA: usize>(x: isize, y: isize, sx: usize, sy: usize) -> Vec2<T> {
     let sub_px_width = T::one() / T::from(SSAA).unwrap();
     let half_sub_px_width = sub_px_width / T::from(2).unwrap();
@@ -137,16 +157,15 @@ fn ssaa_point<T: Real, const SSAA: usize>(x: isize, y: isize, sx: usize, sy: usi
     }
 }
 
-fn ssaa_average
-    <T: Real, F: Fn(Vec2<T>) -> bool, const SSAA: usize>
+#[inline(never)]
+fn ssaa_average<T: Real, F: Fn(Vec2<T>) -> bool, const SSAA: usize>
     (x: isize, y: isize, condition: F) -> u8
 {
     let mut in_count = 0;
 
     for sx in 0..SSAA {
         for sy in 0..SSAA {
-            let p = ssaa_point::<_, SSAA>(x, y, sx, sy);
-            if condition(p) {
+            if condition(ssaa_point::<_, SSAA>(x, y, sx, sy)) {
                 in_count += 1;
             }
         }
@@ -217,7 +236,8 @@ pub fn stroke<T: Real + RelativeEq, const SSAA: usize>(
         };
 
         let is_close_enough = |p| {
-            let projected = segment.projected_point(p);
+            // this is the hot spot
+            let projected = projected_point(segment, p);
             let distance_sq = projected.distance_squared(p);
             distance_sq <= half_stroke_width_sq
         };
@@ -280,7 +300,7 @@ pub fn fill<T: Real + RelativeEq, const SSAA: usize>(
     let h = mask_size.y as isize;
 
     let mut process_sub_segment = |start, end| {
-        let [min_x_px, min_y_px, max_x_px, max_y_px] = aabr(start, end, 3);
+        let [min_x_px, min_y_px, max_x_px, max_y_px] = aabr(start, end, 2);
 
         for y_px in min_y_px..max_y_px {
             if !(0..h).contains(&y_px) {
@@ -306,26 +326,26 @@ pub fn fill<T: Real + RelativeEq, const SSAA: usize>(
 
     let is_inside_path = |p| is_inside(p, path);
 
+    let mut line_start = 0;
     for y in 0..mask_size.y {
-        let i = y * mask_size.x;
-        let line = &mut mask[i..][..mask_size.x];
-
         let mut go_back = 0;
         for x in 0..mask_size.x {
             let not_last_point = x != (mask_size.x - 1);
-            if line[x] == 0 && not_last_point {
+            if mask[line_start + x] == 0 && not_last_point {
                 go_back += 1;
             } else {
                 let avg = ssaa_average::<_, _, SSAA>(x as isize, y as isize, is_inside_path);
-                line[x] = avg;
+                mask[line_start + x] = avg;
 
                 for i in 1..=go_back {
-                    line[x - i] = avg;
+                    mask[line_start + x - i] = avg;
                 }
 
                 go_back = 0;
             }
         }
+
+        line_start += mask_size.x;
     }
 }
 
