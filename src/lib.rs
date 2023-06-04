@@ -196,7 +196,7 @@ fn sub_segments<T: Real + RelativeEq>(
             last = next;
         }
 
-        next = last + unit * length.fract();
+        next = last + unit * sub_segments.fract();
         process_sub_segment(last, next);
     }
 }

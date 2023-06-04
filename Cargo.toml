@@ -1,6 +1,6 @@
 [package]
 name = "wizdraw"
-version = "1.1.4"
+version = "1.1.5"
 edition = "2021"
 authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
 description = "Tiny no_std crate to fill and stroke bezier curves"
