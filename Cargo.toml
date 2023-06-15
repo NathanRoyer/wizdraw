@@ -12,5 +12,9 @@ categories = [ "rendering", "no-std" ]
 [dependencies]
 vek = { version = "0.15.8", default-features = false, features = ["libm"] }
 
+[features]
+default = []
+simd = []
+
 [dev-dependencies]
 png = "0.17.7"
