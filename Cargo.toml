@@ -1,11 +1,11 @@
 [package]
 name = "wizdraw"
-version = "1.1.5"
+version = "1.2.0"
 edition = "2021"
 authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
-description = "Tiny no_std crate to fill and stroke bezier curves"
+description = "Tiny no_std crate to fill and stroke bezier curves (partially SIMD)"
 license = "MIT"
-keywords = [ "vector-graphics", "render", "svg", "no_std" ]
+keywords = [ "vector-graphics", "render", "svg", "no_std", "simd" ]
 repository = "https://github.com/NathanRoyer/wizdraw"
 categories = [ "rendering", "no-std" ]
 
@@ -15,6 +15,7 @@ vek = { version = "0.15.8", default-features = false, features = ["libm"] }
 [features]
 default = []
 simd = []
+f64 = []
 
 [dev-dependencies]
 png = "0.17.7"
