@@ -1,6 +1,6 @@
 use super::{Element, aabr, sub_segments};
 
-use core::{ops::Range, simd::{Simd, SimdPartialOrd, SimdPartialEq}, array::from_fn};
+use core::{ops::Range, simd::{Simd, SimdUint, SimdInt, SimdPartialOrd, SimdPartialEq}, array::from_fn};
 use vek::vec::Vec2;
 
 #[cfg(not(feature = "f64"))]
@@ -95,7 +95,9 @@ pub fn fill<const SSAA: usize, const SSAA_SQ: usize>(
 
             let min_x_px = min_x_px.max(0) as usize;
             let max_x_px = max_x_px.min(w as _) as usize;
-            cov_line[min_x_px..max_x_px].fill(255);
+            if let Some(slice) = cov_line.get_mut(min_x_px..max_x_px) {
+                slice.fill(255);
+            }
         }
     };
 
