@@ -51,28 +51,26 @@ fn use_segment_for_pip(p: Point, s: Point, e: Point) -> i32 {
 
 pub fn subpixel_is_in_path(pixel: Point, path: &[CubicBezier]) -> bool {
     let mut path = path.iter();
-    let mut maybe_curve = path.next();
+    let mut maybe_curve = path.next().cloned();
     let mut winding_number: i32 = 0;
-    let mut done: f32 = 0.0;
     let mut trial: f32 = 1.0;
 
-    while let Some(curve) = maybe_curve {
-        let subcurve = curve.subcurve(done, trial);
-        let subcurve_aabb = subcurve.aabb();
+    while let Some(rem_sc) = maybe_curve {
+        let (trial_sc, future_sc) = rem_sc.split(trial);
+        let trial_aabb = trial_sc.aabb();
 
-        let p_is_in_subcurve_aabb = is_p_in_aabb(pixel, subcurve_aabb);
-        let use_as_is = !p_is_in_subcurve_aabb || is_curve_straight(subcurve);
+        let p_out_of_trial_aabb = !is_p_in_aabb(pixel, trial_aabb);
+        let use_as_is = p_out_of_trial_aabb || is_curve_straight(trial_sc);
 
         if use_as_is {
 
-            winding_number += use_segment_for_pip(pixel, subcurve.c1, subcurve.c4);
+            winding_number += use_segment_for_pip(pixel, trial_sc.c1, trial_sc.c4);
 
             // did we complete this curve?
             if trial == 1.0 {
-                maybe_curve = path.next();
-                done = 0.0;
+                maybe_curve = path.next().cloned();
             } else {
-                done += (1.0 - done) * trial;
+                maybe_curve = Some(future_sc);
                 trial = 1.0;
             }
 

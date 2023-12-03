@@ -72,16 +72,14 @@ fn use_segment_for_pip<const L: usize>(
 
 pub fn subpixel_opacity<const L: usize>(pixel: SimdPoint<L>, path: &[CubicBezier], step_inc: f32) -> f32 where Lc<L>: Slc {
     let path_len = simd_u32(path.len() as u32);
-    let simd_f0 = simd_f32(0.0);
     let simd_f1 = simd_f32(1.0);
     let simd_05 = simd_f32(0.5);
     let simd_i0 = simd_i32(0);
 
     let mut curve_index = simd_u32(0);
     let mut winding_number = simd_i0;
-    let mut done = simd_f0;
     let mut trial = simd_f1;
-    let mut curve = SimdCubicBezier::init(path.first().cloned().unwrap_or_default());
+    let mut rem_sc = SimdCubicBezier::init(path.first().cloned().unwrap_or_default());
 
     loop {
         let valid: SimdBool<L> = curve_index.simd_lt(path_len).into();
@@ -90,38 +88,43 @@ pub fn subpixel_opacity<const L: usize>(pixel: SimdPoint<L>, path: &[CubicBezier
             break;
         }
 
-        let subcurve = curve.subcurve(done, trial);
-        let use_as_is = (!subcurve.is_p_in_aabb(pixel)) | is_curve_straight(subcurve);
+        let (trial_sc, future_sc) = rem_sc.split(trial);
+        let use_as_is = (!trial_sc.is_p_in_aabb(pixel)) | is_curve_straight(trial_sc);
 
         if use_as_is.any() {
-            let winding_number_inc = use_segment_for_pip(pixel, subcurve.c1, subcurve.c4);
+            let winding_number_inc = use_segment_for_pip(pixel, trial_sc.c1, trial_sc.c4);
             let end_of_curve = trial.simd_eq(simd_f1);
-
-            let done_if_used = match end_of_curve.all() {
-                true => simd_f0,
-                false => end_of_curve.select(simd_f0, done + (simd_f1 - done) * trial),
-            };
-            done = use_as_is.select(done_if_used, done);
 
             let inc_curve_index = use_as_is & end_of_curve;
             curve_index += (-(inc_curve_index).to_int()).cast();
 
+            winding_number += (use_as_is & valid).select(winding_number_inc, simd_i0);
+
+            let mut advance_rem_sc = use_as_is;
             for i in 0..L {
                 let ci = curve_index[i] as usize;
                 if inc_curve_index.test(i) && ci < path.len() {
                     let pc = path[ci];
-                    curve.c1.x[i] = pc.c1.x;
-                    curve.c1.y[i] = pc.c1.y;
-                    curve.c2.x[i] = pc.c2.x;
-                    curve.c2.y[i] = pc.c2.y;
-                    curve.c3.x[i] = pc.c3.x;
-                    curve.c3.y[i] = pc.c3.y;
-                    curve.c4.x[i] = pc.c4.x;
-                    curve.c4.y[i] = pc.c4.y;
+                    rem_sc.c1.x[i] = pc.c1.x;
+                    rem_sc.c1.y[i] = pc.c1.y;
+                    rem_sc.c2.x[i] = pc.c2.x;
+                    rem_sc.c2.y[i] = pc.c2.y;
+                    rem_sc.c3.x[i] = pc.c3.x;
+                    rem_sc.c3.y[i] = pc.c3.y;
+                    rem_sc.c4.x[i] = pc.c4.x;
+                    rem_sc.c4.y[i] = pc.c4.y;
+                    advance_rem_sc.set(i, false);
                 }
             }
 
-            winding_number += (use_as_is & valid).select(winding_number_inc, simd_i0);
+            rem_sc.c1.x = advance_rem_sc.select(future_sc.c1.x, rem_sc.c1.x);
+            rem_sc.c1.y = advance_rem_sc.select(future_sc.c1.y, rem_sc.c1.y);
+            rem_sc.c2.x = advance_rem_sc.select(future_sc.c2.x, rem_sc.c2.x);
+            rem_sc.c2.y = advance_rem_sc.select(future_sc.c2.y, rem_sc.c2.y);
+            rem_sc.c3.x = advance_rem_sc.select(future_sc.c3.x, rem_sc.c3.x);
+            rem_sc.c3.y = advance_rem_sc.select(future_sc.c3.y, rem_sc.c3.y);
+            rem_sc.c4.x = advance_rem_sc.select(future_sc.c4.x, rem_sc.c4.x);
+            rem_sc.c4.y = advance_rem_sc.select(future_sc.c4.y, rem_sc.c4.y);
         }
 
         trial = match use_as_is.all() {
@@ -179,11 +182,10 @@ impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {
         }
     }
 
-    fn subcurve(
+    fn split(
         &self,
-        step1t: SimdF32<L>,
-        step2t: SimdF32<L>,
-    ) -> SimdCubicBezier<L> {
+        t: SimdF32<L>,
+    ) -> (Self, Self) {
 
         // #[inline(always)]
         fn travel<const L: usize>(
@@ -199,39 +201,30 @@ impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {
 
         // step 1: take 2nd half of self
 
-        let side1 = travel(self.c1, self.c2, step1t);
-        let side2 = travel(self.c2, self.c3, step1t);
-        let side3 = travel(self.c3, self.c4, step1t);
+        let side1 = travel(self.c1, self.c2, t);
+        let side2 = travel(self.c2, self.c3, t);
+        let side3 = travel(self.c3, self.c4, t);
 
-        let diag1 = travel(side1, side2, step1t);
-        let diag2 = travel(side2, side3, step1t);
+        let diag1 = travel(side1, side2, t);
+        let diag2 = travel(side2, side3, t);
 
-        let end = travel(diag1, diag2, step1t);
+        let split_point = travel(diag1, diag2, t);
 
-        let tmpc = SimdCubicBezier::<L> {
-            c1: end,
+        let first_part = Self {
+            c1: self.c1,
+            c2: side1,
+            c3: diag1,
+            c4: split_point,
+        };
+
+        let second_part = Self {
+            c1: split_point,
             c2: diag2,
             c3: side3,
             c4: self.c4,
         };
 
-        // step 2: take first half of tmpc
-
-        let side1 = travel(tmpc.c1, tmpc.c2, step2t);
-        let side2 = travel(tmpc.c2, tmpc.c3, step2t);
-        let side3 = travel(tmpc.c3, tmpc.c4, step2t);
-
-        let diag1 = travel(side1, side2, step2t);
-        let diag2 = travel(side2, side3, step2t);
-
-        let end = travel(diag1, diag2, step2t);
-
-        SimdCubicBezier {
-            c1: tmpc.c1,
-            c2: side1,
-            c3: diag1,
-            c4: end,
-        }
+        (first_part, second_part)
     }
 
     // #[inline(always)]

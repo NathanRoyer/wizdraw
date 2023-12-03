@@ -44,14 +44,7 @@ pub struct CubicBezier {
 }
 
 impl CubicBezier {
-    // the first parameter is where we first split the curve in two.
-    // we then take the second part of the result and split it again,
-    // this time using the second parameter.
-    //
-    // for instance, with step1t=0.5 & step2t=0.5, we get 1/4 of the
-    // original curve because the second parameter applies to the
-    // result of the first step, not to the original curve.
-    fn subcurve(self, step1t: f32, step2t: f32) -> Self {
+    fn split(self, t: f32) -> (Self, Self) {
 
         #[inline(always)]
         fn travel(a: Point, b: Point, t: f32) -> Point {
@@ -63,39 +56,30 @@ impl CubicBezier {
 
         // step 1: take 2nd half of self
 
-        let side1 = travel(self.c1, self.c2, step1t);
-        let side2 = travel(self.c2, self.c3, step1t);
-        let side3 = travel(self.c3, self.c4, step1t);
+        let side1 = travel(self.c1, self.c2, t);
+        let side2 = travel(self.c2, self.c3, t);
+        let side3 = travel(self.c3, self.c4, t);
 
-        let diag1 = travel(side1, side2, step1t);
-        let diag2 = travel(side2, side3, step1t);
+        let diag1 = travel(side1, side2, t);
+        let diag2 = travel(side2, side3, t);
 
-        let end = travel(diag1, diag2, step1t);
+        let split_point = travel(diag1, diag2, t);
 
-        let tmpc = Self {
-            c1: end,
+        let first_half = Self {
+            c1: self.c1,
+            c2: side1,
+            c3: diag1,
+            c4: split_point,
+        };
+
+        let second_half = Self {
+            c1: split_point,
             c2: diag2,
             c3: side3,
             c4: self.c4,
         };
 
-        // step 2: take first half of tmpc
-
-        let side1 = travel(tmpc.c1, tmpc.c2, step2t);
-        let side2 = travel(tmpc.c2, tmpc.c3, step2t);
-        let side3 = travel(tmpc.c3, tmpc.c4, step2t);
-
-        let diag1 = travel(side1, side2, step2t);
-        let diag2 = travel(side2, side3, step2t);
-
-        let end = travel(diag1, diag2, step2t);
-
-        Self {
-            c1: tmpc.c1,
-            c2: side1,
-            c3: diag1,
-            c4: end,
-        }
+        (first_half, second_half)
     }
 
     fn aabb(&self) -> BoundingBox {
@@ -225,19 +209,21 @@ impl Canvas {
         for curve in path {
             const SMALL_PX_AREA: f32 = 4.0;
             let mut t0 = 0.0;
+            let mut rem_sc = *curve;
             let mut step = 1.0;
 
             while t0 < 1.0 {
-                let remaining = 1.0 - t0;
                 let t1 = (t0 + step).min(1.0);
-                let step2t = (t1 - t0) / remaining;
 
                 // the AABB of [curve(t0), curve(t1)] doesn't always cover all curve points,
                 // so we must either use
                 // - the AABB of all points of a subcurve
                 // - the AABB of all control points of a subcurve (cheaper; what we do)
                 // both of which cover all curve points.
-                let trial_aabb = curve.subcurve(t0, step2t).aabb();
+                let remaining = 1.0 - t0;
+                let step2t = (t1 - t0) / remaining;
+                let (trial_sc, future_sc) = rem_sc.split(step2t);
+                let trial_aabb = trial_sc.aabb();
 
                 let diff_f32 = |(a, b): (f32, f32)| (a - b).abs();
                 let same_f32 = |tuple| diff_f32(tuple) < f32::EPSILON;
@@ -258,6 +244,7 @@ impl Canvas {
                     }
 
                     t0 = t1;
+                    rem_sc = future_sc;
 
                 } else {
                     step = step.min(remaining) * 0.5;
