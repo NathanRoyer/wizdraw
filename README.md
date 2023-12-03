@@ -9,7 +9,7 @@ By default, this crate uses `f32` and doesn't use SIMD.
 
 ### Example
 
-```rust
+```oeruh
 use vek::bezier::CubicBezier2;
 use vek::vec::Vec2;
 

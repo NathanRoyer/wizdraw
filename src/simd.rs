@@ -1,199 +1,287 @@
-use super::{Element, aabr, sub_segments};
+use super::*;
 
-use core::{ops::Range, simd::{Simd, SimdUint, SimdInt, SimdPartialOrd, SimdPartialEq}, array::from_fn};
+use core::simd::{Mask, Simd, SimdInt, SimdFloat, SimdPartialEq, SimdPartialOrd};
+use core::simd::{LaneCount as Lc, SupportedLaneCount as Slc};
 use vek::vec::Vec2;
 
-#[cfg(not(feature = "f64"))]
-type SimdElement = core::simd::f32x16;
-#[cfg(feature = "f64")]
-type SimdElement = core::simd::f64x8;
+// L = SIMD lanes
 
-#[cfg(not(feature = "f64"))]
-const SIMD_EL_COUNT: usize = 16;
-#[cfg(feature = "f64")]
-const SIMD_EL_COUNT: usize = 8;
+type SimdF32<const L: usize> = Simd<f32, L>;
+type SimdU32<const L: usize> = Simd<u32, L>;
+type SimdI32<const L: usize> = Simd<i32, L>;
+type SimdBool<const L: usize> = Mask<i32, L>;
+type SimdPoint<const L: usize> = Vec2<SimdF32<L>>;
 
-type SimdBool = core::simd::Simd<u16, SIMD_EL_COUNT>;
-
-const SIMD_ZERO: SimdElement = SimdElement::from_array([0.0; SIMD_EL_COUNT]);
-const SIMD_EPSILON: SimdElement = SimdElement::from_array([Element::EPSILON; SIMD_EL_COUNT]);
-
-fn splat_x_y(p: Vec2<Element>) -> (SimdElement, SimdElement) {
-    (
-        SimdElement::from_array([p.x; SIMD_EL_COUNT]),
-        SimdElement::from_array([p.y; SIMD_EL_COUNT])
-    )
+#[derive(Copy, Clone, Debug)]
+pub struct SimdCubicBezier<const L: usize> where Lc<L>: Slc {
+    c1: SimdPoint<L>,
+    c2: SimdPoint<L>,
+    c3: SimdPoint<L>,
+    c4: SimdPoint<L>,
 }
 
-#[inline(always)]
-fn is_inside(p_x: SimdElement, p_y: SimdElement, path: &[Vec2<Element>]) -> SimdBool {
-    let zero = Simd::from_array([0i32; SIMD_EL_COUNT]);
-    let mut winding_number = zero;
+// |num| 1.0 / num.sqrt()
+// #[inline(always)]
+fn fast_inv_sqrt<const L: usize>(num: SimdF32<L>) -> SimdF32<L> where Lc<L>: Slc {
+    let simd_inv_sqrt = simd_u32(0x5f37_5a86);
 
-    let (mut s_x, mut s_y) = splat_x_y(path[0]);
-    for i in 1..path.len() {
-        let (e_x, e_y) = splat_x_y(path[i]);
-
-        let v1_x = p_x - s_x;
-        let v1_y = p_y - s_y;
-        let v2_x = e_x - s_x;
-        let v2_y = e_y - s_y;
-        let d = v1_x * v2_y - v1_y * v2_x;
-
-        let cond_a = s_y.simd_le(p_y);
-        let cond_b = e_y.simd_gt(p_y);
-        let cond_c = d.simd_gt(SIMD_EPSILON);
-
-        let dec_mask = ( cond_a) & ( cond_b) & ( cond_c);
-        let inc_mask = (!cond_a) & (!cond_b) & (!cond_c);
-
-        // to_int flips the sign, so dec/inc are inverted
-        winding_number += dec_mask.to_int();
-        winding_number -= inc_mask.to_int();
-
-        s_x = e_x;
-        s_y = e_y;
-    }
-
-    // will return { inside => 1, outside => 0 }
-    (-winding_number.simd_ne(zero).to_int()).cast()
+    SimdF32::from_bits(simd_inv_sqrt - (num.to_bits() >> simd_u32(1)))
 }
 
-/// Fills a path to a byte mask
-///
-/// The mask must have one byte per pixel.
-/// The resulting bytes are closer to 255 if
-/// the corresponding pixel is in the path, or
-/// closer to 0 otherwise. It can be used as
-/// an opacity byte, when blitting pixels.
-///
-/// You can specify a value for super-sample
-/// anti-aliaising via `SSAA`. I suggest
-/// setting it to a value between 2 and 4.
-///
-/// Note: First and last path points must be equal!
-pub fn fill<const SSAA: usize, const SSAA_SQ: usize>(
-    path: &[Vec2<Element>],
-    mask: &mut [u8],
-    mask_size: Vec2<usize>,
-) {
-    assert_eq!(SSAA * SSAA, SSAA_SQ, "SSAA_SQ must be the square of SSAA");
+// #[inline(always)]
+fn is_curve_straight<const L: usize>(curve: SimdCubicBezier<L>) -> SimdBool<L> where Lc<L>: Slc {
+    let simd_straight_threshold_x2 = simd_f32(STRAIGHT_THRESHOLD * 2.0);
 
-    mask.fill(0);
-    let w = mask_size.x as isize;
-    let h = mask_size.y as isize;
+    let distance = |p: SimdPoint<L>| -> SimdF32<L> {
+        // https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points
 
-    let mut process_sub_segment = |start, end| {
-        let [min_x_px, min_y_px, max_x_px, max_y_px] = aabr(start, end, 2);
+        let l = curve.c4 - curve.c1;
+        let a = l.x * (curve.c1.y - p.y);
+        let b = l.y * (curve.c1.x - p.x);
 
-        for y_px in min_y_px..max_y_px {
-            if !(0..h).contains(&y_px) {
-                continue;
-            }
-
-            let cov_line = &mut mask[(y_px as usize) * mask_size.x..][..mask_size.x];
-
-            let min_x_px = min_x_px.max(0) as usize;
-            let max_x_px = max_x_px.min(w as _) as usize;
-            if let Some(slice) = cov_line.get_mut(min_x_px..max_x_px) {
-                slice.fill(255);
-            }
-        }
+        // distance from p to projected point
+        (a - b).abs() * fast_inv_sqrt(l.x * l.x + l.y * l.y)
     };
 
-    for segment in path.windows(2) {
-        sub_segments(segment[0], segment[1], &mut process_sub_segment, 5);
-    }
+    (distance(curve.c2) + distance(curve.c3)).simd_lt(simd_straight_threshold_x2).into()
+}
 
-    let mut ssaa_coords = SsaaPathProcessor::<_, SSAA, SSAA_SQ>::new(|x, y| is_inside(x, y, path));
+// Computes a winding number addition based on [s -> e] segment
+// #[inline(always)]
+fn use_segment_for_pip<const L: usize>(
+    p: SimdPoint<L>,
+    s: SimdPoint<L>,
+    e: SimdPoint<L>,
+) -> SimdI32<L> where Lc<L>: Slc {
+    let simd_epsilon = simd_f32(f32::EPSILON);
 
-    let mut line_start = 0;
-    for y in 0..mask_size.y {
-        let mut go_back = 0;
-        for x in 0..mask_size.x {
-            let not_last_point = x != (mask_size.x - 1);
-            if mask[line_start + x] == 0 && not_last_point {
-                go_back += 1;
-            } else {
-                let last_point = line_start + x;
-                let range = (last_point - go_back)..(last_point + 1);
-                ssaa_coords.set(x as isize, y as isize, range);
-                ssaa_coords.flush(mask, false);
-                go_back = 0;
-            }
+    let v1 = p - s;
+    let v2 = e - s;
+    let d = v1.x * v2.y - v1.y * v2.x;
+
+    let cond_a = s.y.simd_le(p.y);
+    let cond_b = e.y.simd_gt(p.y);
+    let cond_c = d.simd_gt(simd_epsilon);
+
+    let dec_mask = ( cond_a) & ( cond_b) & ( cond_c);
+    let inc_mask = (!cond_a) & (!cond_b) & (!cond_c);
+
+    // to_int gives -1 for true
+    dec_mask.to_int() - inc_mask.to_int()
+}
+
+pub fn subpixel_opacity<const L: usize>(pixel: SimdPoint<L>, path: &[CubicBezier], step_inc: f32) -> f32 where Lc<L>: Slc {
+    let path_len = simd_u32(path.len() as u32);
+    let simd_f0 = simd_f32(0.0);
+    let simd_f1 = simd_f32(1.0);
+    let simd_05 = simd_f32(0.5);
+    let simd_i0 = simd_i32(0);
+
+    let mut curve_index = simd_u32(0);
+    let mut winding_number = simd_i0;
+    let mut done = simd_f0;
+    let mut trial = simd_f1;
+    let mut curve = SimdCubicBezier::init(path.first().cloned().unwrap_or_default());
+
+    loop {
+        let valid: SimdBool<L> = curve_index.simd_lt(path_len).into();
+
+        if !valid.any() {
+            break;
         }
 
-        line_start += mask_size.x;
+        let subcurve = curve.subcurve(done, trial);
+        let use_as_is = (!subcurve.is_p_in_aabb(pixel)) | is_curve_straight(subcurve);
+
+        if use_as_is.any() {
+            let winding_number_inc = use_segment_for_pip(pixel, subcurve.c1, subcurve.c4);
+            let end_of_curve = trial.simd_eq(simd_f1);
+
+            let done_if_used = match end_of_curve.all() {
+                true => simd_f0,
+                false => end_of_curve.select(simd_f0, done + (simd_f1 - done) * trial),
+            };
+            done = use_as_is.select(done_if_used, done);
+
+            let inc_curve_index = use_as_is & end_of_curve;
+            curve_index += (-(inc_curve_index).to_int()).cast();
+
+            for i in 0..L {
+                let ci = curve_index[i] as usize;
+                if inc_curve_index.test(i) && ci < path.len() {
+                    let pc = path[ci];
+                    curve.c1.x[i] = pc.c1.x;
+                    curve.c1.y[i] = pc.c1.y;
+                    curve.c2.x[i] = pc.c2.x;
+                    curve.c2.y[i] = pc.c2.y;
+                    curve.c3.x[i] = pc.c3.x;
+                    curve.c3.y[i] = pc.c3.y;
+                    curve.c4.x[i] = pc.c4.x;
+                    curve.c4.y[i] = pc.c4.y;
+                }
+            }
+
+            winding_number += (use_as_is & valid).select(winding_number_inc, simd_i0);
+        }
+
+        trial = match use_as_is.all() {
+            true => simd_f1,
+            false => use_as_is.select(simd_f1, trial * simd_05),
+        };
+
     }
 
-    ssaa_coords.flush(mask, true);
+    let mut res = 0.0;
+
+    for w in winding_number.as_array() {
+        if *w != 0 {
+            res += step_inc;
+        }
+    }
+
+    res
 }
 
-struct SsaaPathProcessor<F: Fn(SimdElement, SimdElement) -> SimdBool, const SSAA: usize, const SSAA_SQ: usize> {
-    range: [Range<usize>; SIMD_EL_COUNT],
-    src_x: [SimdElement; SSAA_SQ],
-    src_y: [SimdElement; SSAA_SQ],
-    pixel: usize,
-    condition: F,
+pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier]) -> u8 {
+    let simd_lanes_to_use = P.min(MAX_SIMD_LANES);
+    let mut res = 0.0;
+
+    let steps = P / simd_lanes_to_use;
+    let step_inc = 255.0 / (P as f32);
+    let mut spm_offset = 0;
+
+    for _ in 0..steps {
+        res += match simd_lanes_to_use {
+            1  => subpixel_opacity::< 1>(simd_p(p) + simd_spm::<P,  1>(spm_offset), path, step_inc),
+            2  => subpixel_opacity::< 2>(simd_p(p) + simd_spm::<P,  2>(spm_offset), path, step_inc),
+            4  => subpixel_opacity::< 4>(simd_p(p) + simd_spm::<P,  4>(spm_offset), path, step_inc),
+            8  => subpixel_opacity::< 8>(simd_p(p) + simd_spm::<P,  8>(spm_offset), path, step_inc),
+            16 => subpixel_opacity::<16>(simd_p(p) + simd_spm::<P, 16>(spm_offset), path, step_inc),
+            // these are probably useless:
+            32 => subpixel_opacity::<32>(simd_p(p) + simd_spm::<P, 32>(spm_offset), path, step_inc),
+            64 => subpixel_opacity::<64>(simd_p(p) + simd_spm::<P, 64>(spm_offset), path, step_inc),
+            _ => panic!("unsupported SIMD configuration"),
+        };
+
+        spm_offset += simd_lanes_to_use;
+    }
+
+    res as u8
 }
 
-impl<F: Fn(SimdElement, SimdElement) -> SimdBool, const SSAA: usize, const SSAA_SQ: usize> SsaaPathProcessor<F, SSAA, SSAA_SQ> {
-    fn new(condition: F) -> Self {
+impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {
+    fn init(curve: CubicBezier) -> Self {
         Self {
-            range: from_fn(|_| 0..1),
-            src_x: [SIMD_ZERO; SSAA_SQ],
-            src_y: [SIMD_ZERO; SSAA_SQ],
-            pixel: 0,
-            condition,
+            c1: SimdPoint::new(simd_f32(curve.c1.x), simd_f32(curve.c1.y)),
+            c2: SimdPoint::new(simd_f32(curve.c2.x), simd_f32(curve.c2.y)),
+            c3: SimdPoint::new(simd_f32(curve.c3.x), simd_f32(curve.c3.y)),
+            c4: SimdPoint::new(simd_f32(curve.c4.x), simd_f32(curve.c4.y)),
         }
     }
 
-    /// Insert coordinates (pixel < 8 && sub_pixel < SSAA_SQ)
-    #[inline(always)]
-    fn set(&mut self, x: isize, y: isize, range: Range<usize>) {
-        assert!(self.pixel < SIMD_EL_COUNT);
-        let sub_px_width = (SSAA as Element).recip();
-        let half_sub_px_width = sub_px_width / 2.0;
+    fn subcurve(
+        &self,
+        step1t: SimdF32<L>,
+        step2t: SimdF32<L>,
+    ) -> SimdCubicBezier<L> {
 
-        for sx in 0..SSAA {
-            for sy in 0..SSAA {
-                let mut x = (x as Element) + half_sub_px_width;
-                let mut y = (y as Element) + half_sub_px_width;
-
-                for _ in 0..sx { x += sub_px_width; }
-                for _ in 0..sy { y += sub_px_width; }
-
-                let sub_pixel = sy * SSAA + sx;
-                self.src_x[sub_pixel][self.pixel] = x;
-                self.src_y[sub_pixel][self.pixel] = y;
+        // #[inline(always)]
+        fn travel<const L: usize>(
+            a: SimdPoint<L>,
+            b: SimdPoint<L>,
+            t: SimdF32<L>,
+        ) -> SimdPoint<L> where Lc<L>: Slc {
+            SimdPoint {
+                x: a.x + (b.x - a.x) * t,
+                y: a.y + (b.y - a.y) * t,
             }
         }
 
-        self.range[self.pixel] = range;
-        self.pixel += 1;
-    }
+        // step 1: take 2nd half of self
 
-    fn flush(&mut self, mask: &mut [u8], force: bool) {
-        if self.pixel == SIMD_EL_COUNT || force {
-            let mut in_count = Simd::from_array([0 as u16; SIMD_EL_COUNT]);
-            let u8_max = Simd::from_array([u8::MAX as u16; SIMD_EL_COUNT]);
-            let ssaasq = Simd::from_array([SSAA_SQ as u16; SIMD_EL_COUNT]);
+        let side1 = travel(self.c1, self.c2, step1t);
+        let side2 = travel(self.c2, self.c3, step1t);
+        let side3 = travel(self.c3, self.c4, step1t);
 
-            for sub_pixel in 0..SSAA_SQ {
-                let x = self.src_x[sub_pixel];
-                let y = self.src_y[sub_pixel];
+        let diag1 = travel(side1, side2, step1t);
+        let diag2 = travel(side2, side3, step1t);
 
-                in_count += (self.condition)(x, y);
-            }
+        let end = travel(diag1, diag2, step1t);
 
-            // scale ratio on 0..255
-            let values = ((u8_max * in_count) / ssaasq).cast();
+        let tmpc = SimdCubicBezier::<L> {
+            c1: end,
+            c2: diag2,
+            c3: side3,
+            c4: self.c4,
+        };
 
-            while self.pixel > 0 {
-                self.pixel -= 1;
-                let range = self.range[self.pixel].clone();
-                mask[range].fill(values[self.pixel]);
-            }
+        // step 2: take first half of tmpc
+
+        let side1 = travel(tmpc.c1, tmpc.c2, step2t);
+        let side2 = travel(tmpc.c2, tmpc.c3, step2t);
+        let side3 = travel(tmpc.c3, tmpc.c4, step2t);
+
+        let diag1 = travel(side1, side2, step2t);
+        let diag2 = travel(side2, side3, step2t);
+
+        let end = travel(diag1, diag2, step2t);
+
+        SimdCubicBezier {
+            c1: tmpc.c1,
+            c2: side1,
+            c3: diag1,
+            c4: end,
         }
     }
+
+    // #[inline(always)]
+    fn is_p_in_aabb(&self, p: SimdPoint<L>) -> SimdBool<L> {
+        let simd_aabb_safe_margin = simd_f32(AABB_SAFE_MARGIN);
+        let mut inside;
+
+        let min_x = self.c1.x.simd_min(self.c2.x).simd_min(self.c3.x).simd_min(self.c4.x);
+        inside  = (min_x - simd_aabb_safe_margin).simd_le(p.x);
+
+        let max_x = self.c1.x.simd_max(self.c2.x).simd_max(self.c3.x).simd_max(self.c4.x);
+        inside &= (max_x + simd_aabb_safe_margin).simd_ge(p.x);
+
+        let min_y = self.c1.y.simd_min(self.c2.y).simd_min(self.c3.y).simd_min(self.c4.y);
+        inside &= (min_y - simd_aabb_safe_margin).simd_le(p.y);
+
+        let max_y = self.c1.y.simd_max(self.c2.y).simd_max(self.c3.y).simd_max(self.c4.y);
+        inside &= (max_y + simd_aabb_safe_margin).simd_ge(p.y);
+
+        inside
+    }
+}
+
+const fn simd_u32<const L: usize>(n: u32) -> SimdU32<L> where Lc<L>: Slc {
+    SimdU32::from_array([n; L])
+}
+
+const fn simd_f32<const L: usize>(n: f32) -> SimdF32<L> where Lc<L>: Slc {
+    SimdF32::from_array([n; L])
+}
+
+const fn simd_i32<const L: usize>(n: i32) -> SimdI32<L> where Lc<L>: Slc {
+    SimdI32::from_array([n; L])
+}
+
+const fn simd_p<const L: usize>(p: Point) -> SimdPoint<L> where Lc<L>: Slc {
+    SimdPoint::new(simd_f32(p.x), simd_f32(p.y))
+}
+
+const fn simd_spm<const P: usize, const L: usize>(offset: usize) -> SimdPoint<L> where Lc<L>: Slc {
+    let xy = ssaa_subpixel_map::<P>();
+
+    let mut x = [0.0; 16];
+    let mut y = [0.0; 16];
+    let mut i = 0;
+    while i < L {
+        x[i] = xy[offset + i].0;
+        y[i] = xy[offset + i].1;
+        i += 1;
+    }
+
+    SimdPoint::new(SimdF32::from_slice(&x), SimdF32::from_slice(&y))
 }

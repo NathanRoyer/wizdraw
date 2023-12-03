@@ -1,268 +1,384 @@
 #![doc = include_str!("../README.md")]
 
-#![no_std]
+// #![no_std]
 #![cfg_attr(feature = "simd", feature(portable_simd))]
+#![cfg_attr(feature = "simd", feature(slice_flatten))]
 
 extern crate alloc;
+use alloc::{vec::Vec, vec};
 
-use alloc::vec::Vec;
-use vek::bezier::CubicBezier2;
 use vek::vec::Vec2;
-use vek::geom::Aabr;
-use vek::geom::LineSegment2;
 
-#[cfg_attr(feature = "simd", path = "simd.rs")]
-#[cfg_attr(not(feature = "simd"), path = "sequential.rs")]
-mod implementation;
+#[allow(unused_imports)]
+use vek::num_traits::Float;
 
-#[doc(inline)]
-pub use implementation::*;
+const MAX_SIMD_LANES: usize = 8;
+const AABB_SAFE_MARGIN: f32 = 1.0;
 
-#[cfg(not(feature = "f64"))]
-pub type Element = f32;
+// lower is better, higher is cheaper
+// more than one => glitchy
+const STRAIGHT_THRESHOLD: f32 = 0.5;
 
-#[cfg(feature = "f64")]
-pub type Element = f64;
+mod seq;
 
-fn find_longest_segment<const D: usize>(
-    curve: &CubicBezier2<Element>,
-    t: &mut Element,
-    max_diff: Element,
-    end_p: &mut Vec2<Element>,
-) -> bool {
-    let max_diff_sq = max_diff * max_diff;
-    let div: Element = (D + 1) as Element;
+#[cfg(feature = "simd")]
+mod simd;
 
-    let start = *t;
-    let mut trial = 1.0 - start;
-    *t = start + trial;
-
-    let start_p = curve.evaluate(start);
-    let mut to_end = true;
-    'outer: loop {
-        if trial < Element::EPSILON {
-            // shouldn't happen
-            *t = 1.0 - start;
-            to_end = true;
-        }
-        *end_p = curve.evaluate(*t);
-        let p_unit = (*end_p - start_p) / div;
-        let t_unit = trial / div;
-        let mut p_tmp = p_unit;
-        let mut t_tmp = t_unit;
-        for _ in 0..D {
-            let a = start_p + p_tmp;
-            let b = curve.evaluate(start + t_tmp);
-            if a.distance_squared(b) > max_diff_sq {
-                trial /= 2.0;
-                *t = start + trial;
-                to_end = false;
-                continue 'outer;
-            }
-            p_tmp = p_tmp + p_unit;
-            t_tmp = t_tmp + t_unit;
-        }
-        // success
-        break;
+#[cfg(not(feature = "simd"))]
+mod simd {
+    pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier]) -> u8 {
+        seq::pixel_opacity::<P>(p, path)
     }
-    to_end
 }
 
-/// Transforms a cubic bezier curve to linear
-/// segments and appends them to a vector
-///
-/// `max_diff` tells the maximum distance
-/// between the approximated segments and
-/// the original curve. Try values in `1.0..0.1`.
-///
-/// the const generic corresponds to how many
-/// test points will be placed along segments;
-/// these are used to tell the distance between
-/// the segment and the curve. try values from
-/// 3 to 10.
-pub fn push_cubic_bezier_segments<const D: usize>(
-    curve: &CubicBezier2<Element>,
-    max_diff: Element,
-    points: &mut Vec<Vec2<Element>>,
-) {
-    points.push(curve.start);
-    let mut t = 0.0;
-    let mut end_p = Vec2::zero();
-    let mut to_end = false;
-    while !to_end {
-        to_end = find_longest_segment::<D>(curve, &mut t, max_diff, &mut end_p);
-        points.push(end_p);
+type Point = Vec2<f32>;
+type BoundingBox = Vec2<(f32, f32)>;
+
+/// Cubic Bezier Curve, made of 4 control points
+#[derive(Copy, Clone, Debug, Default)]
+pub struct CubicBezier {
+    pub c1: Point,
+    pub c2: Point,
+    pub c3: Point,
+    pub c4: Point,
+}
+
+impl CubicBezier {
+    // the first parameter is where we first split the curve in two.
+    // we then take the second part of the result and split it again,
+    // this time using the second parameter.
+    //
+    // for instance, with step1t=0.5 & step2t=0.5, we get 1/4 of the
+    // original curve because the second parameter applies to the
+    // result of the first step, not to the original curve.
+    fn subcurve(self, step1t: f32, step2t: f32) -> Self {
+
+        #[inline(always)]
+        fn travel(a: Point, b: Point, t: f32) -> Point {
+            Point {
+                x: a.x + (b.x - a.x) * t,
+                y: a.y + (b.y - a.y) * t,
+            }
+        }
+
+        // step 1: take 2nd half of self
+
+        let side1 = travel(self.c1, self.c2, step1t);
+        let side2 = travel(self.c2, self.c3, step1t);
+        let side3 = travel(self.c3, self.c4, step1t);
+
+        let diag1 = travel(side1, side2, step1t);
+        let diag2 = travel(side2, side3, step1t);
+
+        let end = travel(diag1, diag2, step1t);
+
+        let tmpc = Self {
+            c1: end,
+            c2: diag2,
+            c3: side3,
+            c4: self.c4,
+        };
+
+        // step 2: take first half of tmpc
+
+        let side1 = travel(tmpc.c1, tmpc.c2, step2t);
+        let side2 = travel(tmpc.c2, tmpc.c3, step2t);
+        let side3 = travel(tmpc.c3, tmpc.c4, step2t);
+
+        let diag1 = travel(side1, side2, step2t);
+        let diag2 = travel(side2, side3, step2t);
+
+        let end = travel(diag1, diag2, step2t);
+
+        Self {
+            c1: tmpc.c1,
+            c2: side1,
+            c3: diag1,
+            c4: end,
+        }
+    }
+
+    fn aabb(&self) -> BoundingBox {
+        let min_x = self.c1.x.min(self.c2.x).min(self.c3.x).min(self.c4.x);
+        let max_x = self.c1.x.max(self.c2.x).max(self.c3.x).max(self.c4.x);
+
+        let min_y = self.c1.y.min(self.c2.y).min(self.c3.y).min(self.c4.y);
+        let max_y = self.c1.y.max(self.c2.y).max(self.c3.y).max(self.c4.y);
+
+        BoundingBox::new((min_x, max_x), (min_y, max_y))
     }
 }
 
 #[inline(always)]
-fn aabr(start: Vec2<Element>, end: Vec2<Element>, offset: isize) -> [isize; 4] {
-    let aabr = Aabr::<Element> {
-        min: Vec2::partial_min(start, end),
-        max: Vec2::partial_max(start, end),
-    };
+fn combine_aabb(a: BoundingBox, b: BoundingBox) -> BoundingBox {
+    let min_x = a.x.0.min(b.x.0);
+    let max_x = a.x.1.max(b.x.1);
 
-    [
-        (aabr.min.x as isize) - offset,
-        (aabr.min.y as isize) - offset,
-        (aabr.max.x as isize) + offset,
-        (aabr.max.y as isize) + offset,
-    ]
+    let min_y = a.y.0.min(b.y.0);
+    let max_y = a.y.1.max(b.y.1);
+
+    BoundingBox::new((min_x, max_x), (min_y, max_y))
 }
 
-// modification of vek's projected_point
-#[inline(always)]
-fn projected_point(this: LineSegment2<Element>, p: Vec2<Element>) -> Vec2<Element> {
-    let len_sq = this.start.distance_squared(this.end);
+/// A 4-byte color (RGBA)
+pub type Color = rgb::RGBA<u8>;
 
-    if len_sq < Element::EPSILON {
-        this.start
-    } else {
-        let t = ((p - this.start).dot(this.end - this.start) / len_sq).clamp(0.0, 1.0);
-        this.start + (this.end - this.start) * t
-    }
+/// Drawing Surface
+#[derive(Debug, Clone)]
+pub struct Canvas {
+    mask: Vec<u8>,
+    pixels: Vec<Color>,
+    width: usize,
+    height: usize,
 }
 
-fn ssaa_point<const SSAA: usize>(x: isize, y: isize, sx: usize, sy: usize) -> Vec2<Element> {
-    let sub_px_width = (SSAA as Element).recip();
-    let half_sub_px_width = sub_px_width / 2.0;
-
-    let mut x = (x as Element) + half_sub_px_width;
-    let mut y = (y as Element) + half_sub_px_width;
-
-    for _ in 0..sx { x += sub_px_width; }
-    for _ in 0..sy { y += sub_px_width; }
-
-    Vec2 {
-        x,
-        y,
-    }
+/// Super-Sampling Anti-Aliasing Configuration
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SsaaConfig {
+    None,
+    X2,
+    X4,
+    X8,
+    X16,
 }
 
-#[inline(never)]
-fn ssaa_average<F: Fn(Vec2<Element>) -> bool, const SSAA: usize>
-    (x: isize, y: isize, condition: F) -> u8
-{
-    let mut in_count = 0;
-
-    for sx in 0..SSAA {
-        for sy in 0..SSAA {
-            if condition(ssaa_point::<SSAA>(x, y, sx, sy)) {
-                in_count += 1;
-            }
+impl Canvas {
+    pub fn new(width: usize, height: usize) -> Self {
+        let sz = width * height;
+        Self {
+            mask: vec![0; sz],
+            pixels: vec![Default::default(); sz],
+            width,
+            height,
         }
     }
 
-    ((255 * in_count) / (SSAA * SSAA)) as u8
-}
+    /// Sets all pixels to fully transparent
+    pub fn clear(&mut self) {
+        self.pixels.fill(Default::default());
+    }
 
-#[inline(always)]
-fn sub_segments(
-    start: Vec2<Element>,
-    end: Vec2<Element>,
-    process_sub_segment: &mut impl FnMut(Vec2<Element>, Vec2<Element>),
-    sub_segment_len: usize,
-) {
-    let length = start.distance(end);
-    if length > Element::EPSILON {
-        let sub_segments = length / (sub_segment_len as Element);
+    /// Retrieves the inner pixel buffer, which has a size of width x height
+    pub fn pixels(&self) -> &[Color] {
+        &self.pixels
+    }
 
-        let mut last = start;
-        let mut next;
-        let unit = (end - start) / sub_segments;
-
-        let integer_multiples = {
-            // this uses LLVM's fptoui function, which truncates the fp number
-            sub_segments as usize
-        };
-        for _ in 0..integer_multiples {
-            next = last + unit;
-            process_sub_segment(last, next);
-            last = next;
+    /// Fills a shape delimited by a path, which is a sequence of cubic bezier curves
+    ///
+    /// In the `path` slice, a curve at index N must end where the N+1 curve starts.
+    /// Additionally, the last curve must end where the first one starts.
+    ///
+    /// This function first locates the pixels which are inside the shape, creating a blending mask.
+    /// Then, it calls the `texture_sample` function for each of these pixels.
+    /// The returned color is finally applied to the inner pixel buffer (taking
+    /// transparency into account).
+    ///
+    /// If `try_simd` is true and the `simd` feature is enabled, the blending mask is
+    /// created using a parallel algorithm. `ssaa` determines how much anti-aliasing to
+    /// apply to the blending mask. Using SIMD is only advised when `ssaa` isn't `None`.
+    ///
+    /// This function doesn't allocate.
+    pub fn fill<F: Fn(usize, usize) -> Color>(
+        &mut self,
+        path: &[CubicBezier],
+        texture_sample: F,
+        try_simd: bool,
+        ssaa: SsaaConfig,
+    ) {
+        if path.is_empty() {
+            return;
         }
 
-        let fract = {
-            // get fractional part
-            // 15.689 - 15.000 => 0.689
-            sub_segments - (integer_multiples as f32)
-        };
-        next = last + unit * fract;
-        process_sub_segment(last, next);
-    }
-}
+        let w_f = self.width as f32;
+        let h_f = self.height as f32;
+        let x_lim = w_f - 1.0;
+        let y_lim = h_f - 1.0;
 
-/// Strokes a path to a byte mask
-///
-/// The mask must have one byte per pixel.
-/// The resulting bytes are closer to 255 if
-/// the corresponding pixel is on the line, or
-/// closer to 0 otherwise. It can be used as
-/// an opacity byte, when blitting pixels.
-///
-/// You can specify a value for super-sample
-/// anti-aliaising via `SSAA`. I suggest
-/// setting it to a value between 2 and 4.
-///
-/// Note: First and last path points must be equal!
-pub fn stroke<const SSAA: usize>(
-    path: &[Vec2<Element>],
-    mask: &mut [u8],
-    mask_size: Vec2<usize>,
-    line_width: Element,
-) {
-    mask.fill(0);
-    let half_stroke_width = line_width / 2.0;
-    let half_stroke_width_sq = half_stroke_width * half_stroke_width;
+        // determine minimal canvas rectangle
 
-    let offset = (line_width as isize) + 2;
+        let mut aabb = BoundingBox::new((w_f, 0.0), (h_f, 0.0));
 
-    let w = mask_size.x as isize;
-    let h = mask_size.y as isize;
+        for curve in path {
+            aabb = combine_aabb(aabb, curve.aabb());
+        }
 
-    let mut process_sub_segment = |start, end| {
-        let segment = LineSegment2 {
-            start,
-            end,
-        };
+        let min_x = (aabb.x.0 - AABB_SAFE_MARGIN).clamp(0.0, x_lim);
+        let max_x = (aabb.x.1 + AABB_SAFE_MARGIN).clamp(0.0, x_lim);
+        let min_y = (aabb.y.0 - AABB_SAFE_MARGIN).clamp(0.0, y_lim);
+        let max_y = (aabb.y.1 + AABB_SAFE_MARGIN).clamp(0.0, y_lim);
 
-        let is_close_enough = |p| {
-            // this is the hot spot
-            let projected = projected_point(segment, p);
-            let distance_sq = projected.distance_squared(p);
-            distance_sq <= half_stroke_width_sq
-        };
+        let min_x_i = min_x as usize;
+        let max_x_i = max_x as usize;
+        let min_y_i = min_y as usize;
+        let max_y_i = max_y as usize;
 
-        let [min_x_px, min_y_px, max_x_px, max_y_px] = aabr(start, end, offset);
+        for y in min_y_i..=max_y_i {
+            let line_offset = y * self.width;
+            self.mask[line_offset..][min_x_i..=max_x_i].fill(u8::MIN);
+        }
 
-        for y_px in min_y_px..max_y_px {
-            if !(0..h).contains(&y_px) {
-                continue;
+        let steps = 128;
+        // split each curve in [steps] sub curves
+        // select each pixel in aabb for PIP algorithm
+        for curve in path {
+            let mut t0 = 0.0;
+            for i in 0..steps {
+                let t1 = 1.0 / ((steps - i) as f32);
+
+                let aabb_c = curve.subcurve(t0, t1).aabb();
+
+                let min_x_c = (aabb_c.x.0 - AABB_SAFE_MARGIN) as usize;
+                let max_x_c = (aabb_c.x.1 + AABB_SAFE_MARGIN) as usize;
+                let min_y_c = (aabb_c.y.0 - AABB_SAFE_MARGIN) as usize;
+                let max_y_c = (aabb_c.y.1 + AABB_SAFE_MARGIN) as usize;
+
+                for y in min_y_c..=max_y_c {
+                    let line_offset = y * self.width;
+                    self.mask[line_offset..][min_x_c..=max_x_c].fill(u8::MAX);
+                }
+
+                t0 += 1.0 / (steps as f32);
             }
+        }
 
-            let cov_line = &mut mask[(y_px as usize) * mask_size.x..][..mask_size.x];
+        let mut line = &mut self.mask[min_y_i * self.width..];
+        for y in min_y_i..=max_y_i {
+            let mut go_back = 0;
 
-            let mut past = false;
-            for x_px in min_x_px..max_x_px {
-                let x = x_px as usize;
-                if (0..w).contains(&x_px) {
-                    let avg = ssaa_average::<_, SSAA>(x_px, y_px, is_close_enough);
+            for x in min_x_i..=max_x_i {
+                let not_last_point = x != max_x_i;
+                let point = Point::new(x as f32, y as f32);
 
-                    if cov_line[x] < avg {
-                        cov_line[x] = avg;
-                        past = true;
-                    }
-
-                    if avg == 0 && past {
-                        break;
-                    }
+                if line[x] == 0 && not_last_point {
+                    go_back += 1;
                 } else {
-                    break;
+                    let opacity = match (try_simd, ssaa) {
+                        (false, SsaaConfig::None) => seq::pixel_opacity::< 1>(point, path),
+                        (false, SsaaConfig::X2  ) => seq::pixel_opacity::< 2>(point, path),
+                        (false, SsaaConfig::X4  ) => seq::pixel_opacity::< 4>(point, path),
+                        (false, SsaaConfig::X8  ) => seq::pixel_opacity::< 8>(point, path),
+                        (false, SsaaConfig::X16 ) => seq::pixel_opacity::<16>(point, path),
+                        (true, SsaaConfig::None) => simd::pixel_opacity::< 1>(point, path),
+                        (true, SsaaConfig::X2  ) => simd::pixel_opacity::< 2>(point, path),
+                        (true, SsaaConfig::X4  ) => simd::pixel_opacity::< 4>(point, path),
+                        (true, SsaaConfig::X8  ) => simd::pixel_opacity::< 8>(point, path),
+                        (true, SsaaConfig::X16 ) => simd::pixel_opacity::<16>(point, path),
+                    };
+
+                    line[(x - go_back)..=x].fill(opacity);
+
+                    go_back = 0;
+                }
+            }
+
+            line = &mut line[self.width..];
+        }
+
+        for y in min_y_i..=max_y_i {
+            let line_offset = y * self.width;
+
+            for x in min_x_i..=max_x_i {
+                let i = line_offset + x;
+                let opacity = self.mask[i];
+
+                if opacity > 0 {
+                    self.pixels[i] = blend(texture_sample(x, y), self.pixels[i], opacity);
                 }
             }
         }
-    };
-
-    for segment in path.windows(2) {
-        sub_segments(segment[0], segment[1], &mut process_sub_segment, 5);
     }
 }
+
+fn blend(src: Color, dst: Color, opacity: u8) -> Color {
+    let mut src = rgb::RGBA::new(src.r as u16, src.g as u16, src.b as u16, src.a as u16);
+    let     dst = rgb::RGBA::new(dst.r as u16, dst.g as u16, dst.b as u16, dst.a as u16);
+    let u8_max = u8::MAX as u16;
+
+    src.a *= opacity as u16;
+    src.a /= u8_max;
+
+    let dst_a = u8_max - src.a;
+
+    let out_r = (src.r * src.a + dst.r * dst_a) / u8_max;
+    let out_g = (src.g * src.a + dst.g * dst_a) / u8_max;
+    let out_b = (src.b * src.a + dst.b * dst_a) / u8_max;
+    let out_a = (src.a * src.a + dst.a * dst_a) / u8_max;
+
+    Color::new(out_r as u8, out_g as u8, out_b as u8, out_a as u8)
+}
+
+/// Debugging texture showing a continuous rainbow
+///
+/// Stripes are diagonal and separated by a transparent line.
+pub fn rainbow(x: usize, y: usize) -> Color {
+    let i = ((x + y) % 128) >> 4;
+
+    [
+        Color::new(255,   0,   0, 255),
+        Color::new(255, 127,   0, 255),
+        Color::new(255, 255,   0, 255),
+        Color::new(  0, 255,   0, 255),
+        Color::new(  0,   0, 255, 255),
+        Color::new( 75,   0, 130, 255),
+        Color::new(148,   0, 211, 255),
+        Color::new(  0,   0,   0,   0),
+    ][i]
+}
+
+const fn ssaa_subpixel_map<const P: usize>() -> &'static [(f32, f32)] {
+    match P {
+        1 => &[(0.0, 0.0)],
+        2 => &[(-0.25, -0.25), (0.25, 0.25)],
+        4 => &[
+            (-0.25, -0.25),
+            (-0.25,  0.25),
+            ( 0.25, -0.25),
+            ( 0.25,  0.25),
+        ],
+        8 => &[
+            (-0.125, -0.125),
+            (-0.375, -0.375),
+
+            (-0.125,  0.125),
+            (-0.375,  0.375),
+
+            ( 0.125, -0.125),
+            ( 0.375, -0.375),
+
+            ( 0.125,  0.125),
+            ( 0.375,  0.375),
+        ],
+        16 => &[
+            (-0.125, -0.125),
+            (-0.375, -0.375),
+
+            (-0.125,  0.125),
+            (-0.375,  0.375),
+
+            ( 0.125, -0.125),
+            ( 0.375, -0.375),
+
+            ( 0.125,  0.125),
+            ( 0.375,  0.375),
+
+            (-0.125, -0.375),
+            (-0.375, -0.125),
+
+            (-0.125,  0.375),
+            (-0.375,  0.125),
+
+            ( 0.125, -0.375),
+            ( 0.375, -0.125),
+
+            ( 0.125,  0.375),
+            ( 0.375,  0.125),
+        ],
+        _ => panic!("unsupported SSAA configuration"),
+    }
+}
+
+#[allow(unused_variables, dead_code)]
+fn striking_path(outline: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>) {
+    todo!()
+}
+
