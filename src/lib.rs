@@ -217,27 +217,51 @@ impl Canvas {
             self.mask[line_offset..][min_x_i..=max_x_i].fill(u8::MIN);
         }
 
-        let steps = 128;
-        // split each curve in [steps] sub curves
-        // select each pixel in aabb for PIP algorithm
+        // accept segments if:
+        // - it's axis-aligned
+        // - the pixel area is smaller than 9
+        // else:
+        //   half the time increment
         for curve in path {
+            const SMALL_PX_AREA: f32 = 4.0;
             let mut t0 = 0.0;
-            for i in 0..steps {
-                let t1 = 1.0 / ((steps - i) as f32);
+            let mut step = 1.0;
 
-                let aabb_c = curve.subcurve(t0, t1).aabb();
+            while t0 < 1.0 {
+                let remaining = 1.0 - t0;
+                let t1 = (t0 + step).min(1.0);
+                let step2t = (t1 - t0) / remaining;
 
-                let min_x_c = (aabb_c.x.0 - AABB_SAFE_MARGIN) as usize;
-                let max_x_c = (aabb_c.x.1 + AABB_SAFE_MARGIN) as usize;
-                let min_y_c = (aabb_c.y.0 - AABB_SAFE_MARGIN) as usize;
-                let max_y_c = (aabb_c.y.1 + AABB_SAFE_MARGIN) as usize;
+                // the AABB of [curve(t0), curve(t1)] doesn't always cover all curve points,
+                // so we must either use
+                // - the AABB of all points of a subcurve
+                // - the AABB of all control points of a subcurve (cheaper; what we do)
+                // both of which cover all curve points.
+                let trial_aabb = curve.subcurve(t0, step2t).aabb();
 
-                for y in min_y_c..=max_y_c {
-                    let line_offset = y * self.width;
-                    self.mask[line_offset..][min_x_c..=max_x_c].fill(u8::MAX);
+                let diff_f32 = |(a, b): (f32, f32)| (a - b).abs();
+                let same_f32 = |tuple| diff_f32(tuple) < f32::EPSILON;
+
+                let axis_aligned = |aabb: BoundingBox| same_f32(aabb.x) || same_f32(aabb.y);
+                let small_pixel_area = |aabb: BoundingBox| diff_f32(aabb.x) * diff_f32(aabb.y) < SMALL_PX_AREA;
+
+                if axis_aligned(trial_aabb) || small_pixel_area(trial_aabb) {
+
+                    let min_x_sc = (trial_aabb.x.0 - AABB_SAFE_MARGIN) as usize;
+                    let max_x_sc = (trial_aabb.x.1 + AABB_SAFE_MARGIN) as usize;
+                    let min_y_sc = (trial_aabb.y.0 - AABB_SAFE_MARGIN) as usize;
+                    let max_y_sc = (trial_aabb.y.1 + AABB_SAFE_MARGIN) as usize;
+
+                    for y in min_y_sc..=max_y_sc {
+                        let line_offset = y * self.width;
+                        self.mask[line_offset..][min_x_sc..=max_x_sc].fill(u8::MAX);
+                    }
+
+                    t0 = t1;
+
+                } else {
+                    step = step.min(remaining) * 0.5;
                 }
-
-                t0 += 1.0 / (steps as f32);
             }
         }
 
