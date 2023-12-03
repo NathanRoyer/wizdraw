@@ -30,7 +30,7 @@ fn main() {
     let configs = [SsaaConfig::None, SsaaConfig::X2, SsaaConfig::X4, SsaaConfig::X8, SsaaConfig::X16];
     for (simd, dbg) in [(false, "SEQ"), (true, "SIMD")] {
         for config in configs {
-            let shots = 2;
+            let shots = 120;
             let before = Instant::now();
             for _ in 0..shots {
                 canvas.clear();
