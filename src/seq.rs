@@ -91,7 +91,7 @@ pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier], holes: bool
     let mut res = 0.0;
 
     for offset in ssaa_subpixel_map::<P>() {
-        if subpixel_is_in_path(p + Point::from(*offset) * 2.0, path, holes) {
+        if subpixel_is_in_path(p + Point::from(*offset), path, holes) {
             res += (u8::MAX as f32) / (P as f32);
         }
     }
