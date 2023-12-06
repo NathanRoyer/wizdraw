@@ -1,58 +1,71 @@
-`wizdraw` - tiny no_std crate to fill and stroke bezier curves (partially SIMD)
+`wizdraw` - Tiny no_std crate to fill and stroke composite bezier curves (SIMD/SSAA)
+
+### Limitations
+
+- Pixels are [R, G, B, A] values with 8-bit components
+- Point coordinates are pairs of `f32`
 
 ### Features
 
-- `f64`: use `f64`s instead of `f32`s
-- `simd`: use the SIMD version of the `fill` function
+- `simd`: include SIMD code, which can speed rendering up when anti-aliasing is used.
+- `stroke`: include the `util::stroke_path` utility function.
 
-By default, this crate uses `f32` and doesn't use SIMD.
+By default, this crate doesn't use SIMD because a nightly toolchain is required for that.
 
 ### Example
 
-```oeruh
-use vek::bezier::CubicBezier2;
-use vek::vec::Vec2;
+```rust
+use wizdraw::{Canvas, Color, CubicBezier, Point, SsaaConfig, util};
+use wizdraw::rgb::ComponentBytes;
 
-// these coordinates correspond to pixels
-let start = Vec2::new(250.0, 500.0);
-let curve1 = CubicBezier2 {
-    start,
-    ctrl0: Vec2::new(250.0, 250.0),
-    ctrl1: Vec2::new(750.0, 250.0),
-    end:   Vec2::new(750.0, 500.0),
-};
-let curve2 = CubicBezier2 {
-    start: Vec2::new(750.0, 600.0),
-    ctrl0: Vec2::new(750.0, 400.0),
-    ctrl1: Vec2::new(250.0, 400.0),
-    end:   Vec2::new(250.0, 600.0),
-};
+// size of our output buffer: 1000x1000px
+let mut canvas = Canvas::new(1000, 1000);
 
-let mut points = Vec::new();
+// the unit for these coordinates is a pixel
+let path = [
+    CubicBezier {
+        c1: Point::new(250.0, 600.0),
+        c2: Point::new(250.0, 250.0),
+        c3: Point::new(750.0, 250.0),
+        c4: Point::new(750.0, 600.0),
+    },
+    CubicBezier {
+        c1: Point::new(750.0, 600.0),
+        c2: Point::new(750.0, 400.0),
+        c3: Point::new(250.0, 400.0),
+        c4: Point::new(250.0, 600.0),
+    },
+];
 
-// convert the curves to a path;
-wizdraw::push_cubic_bezier_segments::<6>(&curve1, 0.2, &mut points);
-wizdraw::push_cubic_bezier_segments::<6>(&curve2, 0.2, &mut points);
+// We'll generate another path which represents a line along the other path
+let mut contour = Vec::new();
+let stroke_width = 10.0; // px
+let max_error = 1.0; // px
+util::stroke_path(&path, stroke_width, &mut contour, max_error);
 
-// close the loop
-points.push(start);
+// use SIMD functions, if this wizdraw build has the feature
+let try_to_use_simd = true;
 
-// create a buffer to hold the mask
-let mask_size = Vec2::new(1000, 1000);
-let mut mask = vec![0u8; mask_size.product()];
+// we'll use the highest SSAA config
+let ssaa = SsaaConfig::X16;
 
-// if you want to fill the path:
-// (SSAA = 4, squared = 16)
-wizdraw::fill::<4, 16>(&points, &mut mask, mask_size);
+// path holes won't show up on the output
+let dont_show_holes = false;
 
-// or if you'd like to stroke the path:
-// (SSAA = 4)
-let stroke_width = 2.0;
-wizdraw::stroke::<4>(&points, &mut mask, mask_size, stroke_width);
+// fill the path with a rainbow texture
+canvas.fill(&path, util::rainbow, try_to_use_simd, ssaa, dont_show_holes);
+
+// we'll draw the contour in myrtle
+let myrtle = |_x, _y| Color::new(100, 100, 255, 255);
+canvas.fill(&contour, myrtle, try_to_use_simd, ssaa, dont_show_holes);
+
+// Time to use our render!
+let pixels: &[Color] = canvas.pixels();
+let bytes: &[u8] = pixels.as_bytes();
 ```
 
 ### Demo: PNG output
 
 Check out the `png_demo` example to generate this image:
 
-![output.png](https://docs.rs/crate/wizdraw/1.1.0/source/output.png)
+![output.png](https://docs.rs/crate/wizdraw/2.0.0/source/output.png)

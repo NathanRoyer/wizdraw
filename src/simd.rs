@@ -70,7 +70,12 @@ fn use_segment_for_pip<const L: usize>(
     dec_mask.to_int() - inc_mask.to_int()
 }
 
-pub fn subpixel_opacity<const L: usize>(pixel: SimdPoint<L>, path: &[CubicBezier], step_inc: f32) -> f32 where Lc<L>: Slc {
+pub fn subpixel_opacity<const L: usize>(
+    pixel: SimdPoint<L>,
+    path: &[CubicBezier],
+    step_inc: f32,
+    holes: bool,
+) -> f32 where Lc<L>: Slc {
     let path_len = simd_u32(path.len() as u32);
     let simd_f1 = simd_f32(1.0);
     let simd_05 = simd_f32(0.5);
@@ -137,7 +142,12 @@ pub fn subpixel_opacity<const L: usize>(pixel: SimdPoint<L>, path: &[CubicBezier
     let mut res = 0.0;
 
     for w in winding_number.as_array() {
-        if *w != 0 {
+        let num = match holes {
+            true => *w % 2,
+            false => *w,
+        };
+
+        if num != 0 {
             res += step_inc;
         }
     }
@@ -145,7 +155,7 @@ pub fn subpixel_opacity<const L: usize>(pixel: SimdPoint<L>, path: &[CubicBezier
     res
 }
 
-pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier]) -> u8 {
+pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier], holes: bool) -> u8 {
     let simd_lanes_to_use = P.min(MAX_SIMD_LANES);
     let mut res = 0.0;
 
@@ -155,14 +165,11 @@ pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier]) -> u8 {
 
     for _ in 0..steps {
         res += match simd_lanes_to_use {
-            1  => subpixel_opacity::< 1>(simd_p(p) + simd_spm::<P,  1>(spm_offset), path, step_inc),
-            2  => subpixel_opacity::< 2>(simd_p(p) + simd_spm::<P,  2>(spm_offset), path, step_inc),
-            4  => subpixel_opacity::< 4>(simd_p(p) + simd_spm::<P,  4>(spm_offset), path, step_inc),
-            8  => subpixel_opacity::< 8>(simd_p(p) + simd_spm::<P,  8>(spm_offset), path, step_inc),
-            16 => subpixel_opacity::<16>(simd_p(p) + simd_spm::<P, 16>(spm_offset), path, step_inc),
-            // these are probably useless:
-            32 => subpixel_opacity::<32>(simd_p(p) + simd_spm::<P, 32>(spm_offset), path, step_inc),
-            64 => subpixel_opacity::<64>(simd_p(p) + simd_spm::<P, 64>(spm_offset), path, step_inc),
+            1  => subpixel_opacity::< 1>(simd_p(p) + simd_spm::<P,  1>(spm_offset) * simd_f32(2.0), path, step_inc, holes),
+            2  => subpixel_opacity::< 2>(simd_p(p) + simd_spm::<P,  2>(spm_offset) * simd_f32(2.0), path, step_inc, holes),
+            4  => subpixel_opacity::< 4>(simd_p(p) + simd_spm::<P,  4>(spm_offset) * simd_f32(2.0), path, step_inc, holes),
+            8  => subpixel_opacity::< 8>(simd_p(p) + simd_spm::<P,  8>(spm_offset) * simd_f32(2.0), path, step_inc, holes),
+            16 => subpixel_opacity::<16>(simd_p(p) + simd_spm::<P, 16>(spm_offset) * simd_f32(2.0), path, step_inc, holes),
             _ => panic!("unsupported SIMD configuration"),
         };
 

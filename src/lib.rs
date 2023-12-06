@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-// #![no_std]
+#![no_std]
 #![cfg_attr(feature = "simd", feature(portable_simd))]
 #![cfg_attr(feature = "simd", feature(slice_flatten))]
 
@@ -8,10 +8,11 @@ extern crate alloc;
 use alloc::{vec::Vec, vec};
 
 use vek::vec::Vec2;
-
-#[allow(unused_imports)]
 use vek::num_traits::Float;
 
+pub use rgb;
+
+#[cfg(feature = "simd")]
 const MAX_SIMD_LANES: usize = 8;
 const AABB_SAFE_MARGIN: f32 = 1.0;
 
@@ -19,19 +20,17 @@ const AABB_SAFE_MARGIN: f32 = 1.0;
 // more than one => glitchy
 const STRAIGHT_THRESHOLD: f32 = 0.5;
 
-mod seq;
+const DEG_90: f32 = core::f32::consts::PI * 0.5;
 
 #[cfg(feature = "simd")]
 mod simd;
+mod seq;
+pub mod util;
 
 #[cfg(not(feature = "simd"))]
-mod simd {
-    pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier]) -> u8 {
-        seq::pixel_opacity::<P>(p, path)
-    }
-}
+use seq as simd;
 
-type Point = Vec2<f32>;
+pub type Point = Vec2<f32>;
 type BoundingBox = Vec2<(f32, f32)>;
 
 /// Cubic Bezier Curve, made of 4 control points
@@ -43,19 +42,82 @@ pub struct CubicBezier {
     pub c4: Point,
 }
 
-impl CubicBezier {
-    fn split(self, t: f32) -> (Self, Self) {
+#[inline(always)]
+fn travel(a: Point, b: Point, t: f32) -> Point {
+    Point {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+    }
+}
 
-        #[inline(always)]
-        fn travel(a: Point, b: Point, t: f32) -> Point {
-            Point {
-                x: a.x + (b.x - a.x) * t,
-                y: a.y + (b.y - a.y) * t,
+impl CubicBezier {
+    fn reversed(self, actually: bool) -> Self {
+        match actually {
+            true => CubicBezier {
+                c1: self.c4,
+                c2: self.c3,
+                c3: self.c2,
+                c4: self.c1,
+            },
+            false => self,
+        }
+    }
+
+    fn offset(&self, normal_factor: f32) -> Self {
+        let side1 = travel(self.c1, self.c2, 0.5);
+        let side2 = travel(self.c2, self.c3, 0.5);
+        let side3 = travel(self.c3, self.c4, 0.5);
+
+        let this_norm_c1 = (self.c2 - self.c1).normalized().rotated_z(DEG_90) * normal_factor;
+        let this_norm_c2 = (side2 - side1).normalized().rotated_z(DEG_90) * normal_factor;
+        let this_norm_c3 = (side3 - side2).normalized().rotated_z(DEG_90) * normal_factor;
+        let this_norm_c4 = (self.c4 - self.c3).normalized().rotated_z(DEG_90) * normal_factor;
+
+
+        CubicBezier {
+            c1: self.c1 + this_norm_c1,
+            c2: self.c2 + this_norm_c2,
+            c3: self.c3 + this_norm_c3,
+            c4: self.c4 + this_norm_c4,
+        }
+    }
+
+    // along normal
+    fn eval_and_offset(&self, t: f32, normal_factor: f32) -> Point {
+        let side1 = travel(self.c1, self.c2, t);
+        let side2 = travel(self.c2, self.c3, t);
+        let side3 = travel(self.c3, self.c4, t);
+
+        let diag1 = travel(side1, side2, t);
+        let diag2 = travel(side2, side3, t);
+
+        let split_point = travel(diag1, diag2, t);
+        let offset = (diag2 - diag1).normalized().rotated_z(DEG_90) * normal_factor;
+
+        split_point + offset
+    }
+
+    fn max_offset_error(&self, offset_curve: &Self, offset: f32, steps: usize) -> f32 {
+        let step_inc = 1.0 / (steps as f32);
+        let mut t = step_inc;
+        let mut max_error = 0.0;
+
+        for _ in 0..(steps - 1) {
+            let expected = self.eval_and_offset(t, offset);
+            let actual = offset_curve.eval_and_offset(t, 0.0);
+            let error = expected.distance(actual);
+
+            if max_error < error {
+                max_error = error;
             }
+
+            t += step_inc;
         }
 
-        // step 1: take 2nd half of self
+        max_error
+    }
 
+    fn split(self, t: f32) -> (Self, Self) {
         let side1 = travel(self.c1, self.c2, t);
         let side2 = travel(self.c2, self.c3, t);
         let side3 = travel(self.c3, self.c4, t);
@@ -149,8 +211,9 @@ impl Canvas {
 
     /// Fills a shape delimited by a path, which is a sequence of cubic bezier curves
     ///
-    /// In the `path` slice, a curve at index N must end where the N+1 curve starts.
-    /// Additionally, the last curve must end where the first one starts.
+    /// The shape must be a [Composite Bezier Curve](https://en.wikipedia.org/wiki/Composite_B%C3%A9zier_curve).
+    /// In other words: in the `path` slice, a curve at index N must end where the N+1 curve starts;
+    /// additionally, the last curve must end where the first one starts.
     ///
     /// This function first locates the pixels which are inside the shape, creating a blending mask.
     /// Then, it calls the `texture_sample` function for each of these pixels.
@@ -161,6 +224,10 @@ impl Canvas {
     /// created using a parallel algorithm. `ssaa` determines how much anti-aliasing to
     /// apply to the blending mask. Using SIMD is only advised when `ssaa` isn't `None`.
     ///
+    /// If `holes` is true, path holes won't be filled; if it's false, path holes will be filled too.
+    /// If this sounds unclear, read the [Wikipedia entry on Winding Numbers](https://en.wikipedia.org/wiki/Winding_number):
+    /// Pixels which yield winding numbers other than -1, 0 and 1 are in holes.
+    ///
     /// This function doesn't allocate.
     pub fn fill<F: Fn(usize, usize) -> Color>(
         &mut self,
@@ -168,6 +235,7 @@ impl Canvas {
         texture_sample: F,
         try_simd: bool,
         ssaa: SsaaConfig,
+        holes: bool,
     ) {
         if path.is_empty() {
             return;
@@ -264,16 +332,16 @@ impl Canvas {
                     go_back += 1;
                 } else {
                     let opacity = match (try_simd, ssaa) {
-                        (false, SsaaConfig::None) => seq::pixel_opacity::< 1>(point, path),
-                        (false, SsaaConfig::X2  ) => seq::pixel_opacity::< 2>(point, path),
-                        (false, SsaaConfig::X4  ) => seq::pixel_opacity::< 4>(point, path),
-                        (false, SsaaConfig::X8  ) => seq::pixel_opacity::< 8>(point, path),
-                        (false, SsaaConfig::X16 ) => seq::pixel_opacity::<16>(point, path),
-                        (true, SsaaConfig::None) => simd::pixel_opacity::< 1>(point, path),
-                        (true, SsaaConfig::X2  ) => simd::pixel_opacity::< 2>(point, path),
-                        (true, SsaaConfig::X4  ) => simd::pixel_opacity::< 4>(point, path),
-                        (true, SsaaConfig::X8  ) => simd::pixel_opacity::< 8>(point, path),
-                        (true, SsaaConfig::X16 ) => simd::pixel_opacity::<16>(point, path),
+                        (false, SsaaConfig::None) => seq::pixel_opacity::< 1>(point, path, holes),
+                        (false, SsaaConfig::X2  ) => seq::pixel_opacity::< 2>(point, path, holes),
+                        (false, SsaaConfig::X4  ) => seq::pixel_opacity::< 4>(point, path, holes),
+                        (false, SsaaConfig::X8  ) => seq::pixel_opacity::< 8>(point, path, holes),
+                        (false, SsaaConfig::X16 ) => seq::pixel_opacity::<16>(point, path, holes),
+                        (true, SsaaConfig::None) => simd::pixel_opacity::< 1>(point, path, holes),
+                        (true, SsaaConfig::X2  ) => simd::pixel_opacity::< 2>(point, path, holes),
+                        (true, SsaaConfig::X4  ) => simd::pixel_opacity::< 4>(point, path, holes),
+                        (true, SsaaConfig::X8  ) => simd::pixel_opacity::< 8>(point, path, holes),
+                        (true, SsaaConfig::X16 ) => simd::pixel_opacity::<16>(point, path, holes),
                     };
 
                     line[(x - go_back)..=x].fill(opacity);
@@ -316,24 +384,6 @@ fn blend(src: Color, dst: Color, opacity: u8) -> Color {
     let out_a = (src.a * src.a + dst.a * dst_a) / u8_max;
 
     Color::new(out_r as u8, out_g as u8, out_b as u8, out_a as u8)
-}
-
-/// Debugging texture showing a continuous rainbow
-///
-/// Stripes are diagonal and separated by a transparent line.
-pub fn rainbow(x: usize, y: usize) -> Color {
-    let i = ((x + y) % 128) >> 4;
-
-    [
-        Color::new(255,   0,   0, 255),
-        Color::new(255, 127,   0, 255),
-        Color::new(255, 255,   0, 255),
-        Color::new(  0, 255,   0, 255),
-        Color::new(  0,   0, 255, 255),
-        Color::new( 75,   0, 130, 255),
-        Color::new(148,   0, 211, 255),
-        Color::new(  0,   0,   0,   0),
-    ][i]
 }
 
 const fn ssaa_subpixel_map<const P: usize>() -> &'static [(f32, f32)] {
@@ -386,10 +436,5 @@ const fn ssaa_subpixel_map<const P: usize>() -> &'static [(f32, f32)] {
         ],
         _ => panic!("unsupported SSAA configuration"),
     }
-}
-
-#[allow(unused_variables, dead_code)]
-fn striking_path(outline: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>) {
-    todo!()
 }
 

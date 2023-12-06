@@ -49,7 +49,7 @@ fn use_segment_for_pip(p: Point, s: Point, e: Point) -> i32 {
     (inc as i32) - (dec as i32)
 }
 
-pub fn subpixel_is_in_path(pixel: Point, path: &[CubicBezier]) -> bool {
+pub fn subpixel_is_in_path(pixel: Point, path: &[CubicBezier], holes: bool) -> bool {
     let mut path = path.iter();
     let mut maybe_curve = path.next().cloned();
     let mut winding_number: i32 = 0;
@@ -79,14 +79,19 @@ pub fn subpixel_is_in_path(pixel: Point, path: &[CubicBezier]) -> bool {
         }
     }
 
-    winding_number != 0
+    let num = match holes {
+        true => winding_number % 2,
+        false => winding_number,
+    };
+
+    num != 0
 }
 
-pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier]) -> u8 {
+pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier], holes: bool) -> u8 {
     let mut res = 0.0;
 
     for offset in ssaa_subpixel_map::<P>() {
-        if subpixel_is_in_path(p + Point::from(*offset), path) {
+        if subpixel_is_in_path(p + Point::from(*offset) * 2.0, path, holes) {
             res += (u8::MAX as f32) / (P as f32);
         }
     }
