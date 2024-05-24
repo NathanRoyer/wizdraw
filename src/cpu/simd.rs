@@ -1,6 +1,6 @@
 use super::*;
 
-use core::simd::{Mask, Simd, SimdInt, SimdFloat, SimdPartialEq, SimdPartialOrd};
+use core::simd::prelude::*;
 use core::simd::{LaneCount as Lc, SupportedLaneCount as Slc};
 use vek::vec::Vec2;
 
@@ -46,22 +46,19 @@ fn is_curve_straight<const L: usize>(curve: SimdCubicBezier<L>) -> SimdBool<L> w
     (distance(curve.c2) + distance(curve.c3)).simd_lt(simd_straight_threshold_x2).into()
 }
 
-// Computes a winding number addition based on [s -> e] segment
+// Computes a winding number increment/decrement based on [s -> e] segment
 // #[inline(always)]
 fn use_segment_for_pip<const L: usize>(
     p: SimdPoint<L>,
     s: SimdPoint<L>,
     e: SimdPoint<L>,
 ) -> SimdI32<L> where Lc<L>: Slc {
-    let simd_epsilon = simd_f32(f32::EPSILON);
-
     let v1 = p - s;
     let v2 = e - s;
-    let d = v1.x * v2.y - v1.y * v2.x;
 
     let cond_a = s.y.simd_le(p.y);
     let cond_b = e.y.simd_gt(p.y);
-    let cond_c = d.simd_gt(simd_epsilon);
+    let cond_c = (v1.x * v2.y).simd_gt(v1.y * v2.x);
 
     let dec_mask = ( cond_a) & ( cond_b) & ( cond_c);
     let inc_mask = (!cond_a) & (!cond_b) & (!cond_c);
@@ -71,11 +68,14 @@ fn use_segment_for_pip<const L: usize>(
 }
 
 pub fn subpixel_opacity<const L: usize>(
-    pixel: SimdPoint<L>,
+    pixel_array: [Point; L],
     path: &[CubicBezier],
-    step_inc: f32,
     holes: bool,
-) -> f32 where Lc<L>: Slc {
+) -> [bool; L] where Lc<L>: Slc {
+    let x = SimdF32::from_array(pixel_array.map(|p| p.x));
+    let y = SimdF32::from_array(pixel_array.map(|p| p.y));
+    let pixel = SimdPoint::new(x, y);
+
     let path_len = simd_u32(path.len() as u32);
     let simd_f1 = simd_f32(1.0);
     let simd_05 = simd_f32(0.5);
@@ -139,44 +139,10 @@ pub fn subpixel_opacity<const L: usize>(
 
     }
 
-    let mut res = 0.0;
-
-    for w in winding_number.as_array() {
-        let num = match holes {
-            true => *w % 2,
-            false => *w,
-        };
-
-        if num != 0 {
-            res += step_inc;
-        }
-    }
-
-    res
-}
-
-pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier], holes: bool) -> u8 {
-    let simd_lanes_to_use = P.min(MAX_SIMD_LANES);
-    let mut res = 0.0;
-
-    let steps = P / simd_lanes_to_use;
-    let step_inc = 255.0 / (P as f32);
-    let mut spm_offset = 0;
-
-    for _ in 0..steps {
-        res += match simd_lanes_to_use {
-            1  => subpixel_opacity::< 1>(simd_p(p) + simd_spm::<P,  1>(spm_offset), path, step_inc, holes),
-            2  => subpixel_opacity::< 2>(simd_p(p) + simd_spm::<P,  2>(spm_offset), path, step_inc, holes),
-            4  => subpixel_opacity::< 4>(simd_p(p) + simd_spm::<P,  4>(spm_offset), path, step_inc, holes),
-            8  => subpixel_opacity::< 8>(simd_p(p) + simd_spm::<P,  8>(spm_offset), path, step_inc, holes),
-            16 => subpixel_opacity::<16>(simd_p(p) + simd_spm::<P, 16>(spm_offset), path, step_inc, holes),
-            _ => panic!("unsupported SIMD configuration"),
-        };
-
-        spm_offset += simd_lanes_to_use;
-    }
-
-    res as u8
+    winding_number.as_array().map(|w| match holes {
+        true => (w % 2) != 0,
+        false => w != 0,
+    })
 }
 
 impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {

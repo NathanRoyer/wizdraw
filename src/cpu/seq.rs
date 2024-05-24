@@ -7,7 +7,7 @@ fn fast_inv_sqrt(num: f32) -> f32 {
 }
 
 #[inline(always)]
-fn is_curve_straight(curve: CubicBezier) -> bool {
+pub(super) fn is_curve_straight(curve: CubicBezier) -> bool {
     let close_enough = |p: Point| {
         // https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points
 
@@ -32,22 +32,25 @@ fn is_p_in_aabb(p: Point, bb: BoundingBox) -> bool {
     (bb.y.1 + AABB_SAFE_MARGIN) >= p.y
 }
 
-// Computes a winding number addition based on [S -> E] segment and point P
+// Computes a winding number increment/decrement based on [S -> E] segment and point P
 #[inline(always)]
-fn use_segment_for_pip(p: Point, s: Point, e: Point) -> i32 {
+pub(super) fn use_segment_for_pip(p: Point, s: Point, e: Point) -> i32 {
     let v1 = p - s;
     let v2 = e - s;
-    let d = v1.x * v2.y - v1.y * v2.x;
 
     let b1 = s.y <= p.y;
     let b2 = e.y > p.y;
-    let b3 = d > f32::EPSILON;
+    let b3 = (v1.x * v2.y) > (v1.y * v2.x);
 
     let dec = ( b1) & ( b2) & ( b3);
     let inc = (!b1) & (!b2) & (!b3);
 
     (inc as i32) - (dec as i32)
 }
+
+// in case of too much curves:
+// - non-last passes update frag_depth
+// - last pass update pixels
 
 pub fn subpixel_is_in_path(pixel: Point, path: &[CubicBezier], holes: bool) -> bool {
     let mut path = path.iter();
@@ -57,8 +60,8 @@ pub fn subpixel_is_in_path(pixel: Point, path: &[CubicBezier], holes: bool) -> b
 
     while let Some(rem_sc) = maybe_curve {
         let (trial_sc, future_sc) = rem_sc.split(trial);
-        let trial_aabb = trial_sc.aabb();
 
+        let trial_aabb = trial_sc.aabb();
         let p_out_of_trial_aabb = !is_p_in_aabb(pixel, trial_aabb);
         let use_as_is = p_out_of_trial_aabb || is_curve_straight(trial_sc);
 
@@ -85,16 +88,4 @@ pub fn subpixel_is_in_path(pixel: Point, path: &[CubicBezier], holes: bool) -> b
     };
 
     num != 0
-}
-
-pub fn pixel_opacity<const P: usize>(p: Point, path: &[CubicBezier], holes: bool) -> u8 {
-    let mut res = 0.0;
-
-    for offset in ssaa_subpixel_map::<P>() {
-        if subpixel_is_in_path(p + Point::from(*offset), path, holes) {
-            res += (u8::MAX as f32) / (P as f32);
-        }
-    }
-
-    res as u8
 }

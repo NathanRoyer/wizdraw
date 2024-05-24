@@ -1,22 +1,5 @@
 use super::*;
-
-/// Debugging texture showing a continuous rainbow
-///
-/// Stripes are diagonal and separated by a transparent line.
-pub fn rainbow(x: usize, y: usize) -> Color {
-    let i = ((x + y) % 128) >> 4;
-
-    [
-        Color::new(255,   0,   0, 255),
-        Color::new(255, 127,   0, 255),
-        Color::new(255, 255,   0, 255),
-        Color::new(  0, 255,   0, 255),
-        Color::new(  0,   0, 255, 255),
-        Color::new( 75,   0, 130, 255),
-        Color::new(148,   0, 211, 255),
-        Color::new(255, 255, 255, 100),
-    ][i]
-}
+use alloc::vec::Vec;
 
 /// Creates a Contour composite bezier curve based on another one.
 ///
@@ -34,14 +17,14 @@ pub fn rainbow(x: usize, y: usize) -> Color {
 ///
 /// The author's advice: let Rust manage the vector's capacity but re-use the vector between frames.
 #[cfg(feature = "stroke")]
-pub fn stroke_path(line: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>, max_error: f32) {
+pub fn contour(shape: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>, max_error: f32) {
     output.clear();
 
-    if line.is_empty() {
+    if shape.is_empty() {
         return;
     }
 
-    let closed = line.first().unwrap().c1 == line.last().unwrap().c4;
+    let closed = shape.first().unwrap().c1 == shape.last().unwrap().c4;
     let mut end_index = [0; 2];
 
     let normal_factor = width * 0.5;
@@ -52,8 +35,8 @@ pub fn stroke_path(line: &[CubicBezier], width: f32, output: &mut Vec<CubicBezie
         output.push(Default::default());
 
         let get_curve = |i| match side {
-            0 => line.get(i),
-            1 => line.get(line.len().overflowing_sub(i + 1).0),
+            0 => shape.get(i),
+            1 => shape.get(shape.len().overflowing_sub(i + 1).0),
             _ => unreachable!(),
         }.cloned().map(|c: CubicBezier| c.reversed(side == 1));
 
