@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 #![doc = include_str!("../README.md")]
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -6,22 +5,25 @@
 #![cfg_attr(feature = "simd", feature(slice_flatten))]
 
 extern crate alloc;
-extern crate std;
+pub extern crate rgb;
 
 use vek::vec::Vec2;
 
 #[allow(unused_imports)]
 use vek::num_traits::Float;
 
-pub mod util;
+#[cfg(any(doc, feature = "contour"))]
+mod contour;
+
+#[cfg(any(doc, feature = "contour"))]
+pub use contour::contour;
+
+/// Implementations of [`Canvas`] using only the CPU
 pub mod cpu;
 
+// todo
 // pub mod opengl;
 
-pub use rgb;
-
-#[cfg(feature = "simd")]
-const MAX_SIMD_LANES: usize = 8;
 const AABB_SAFE_MARGIN: f32 = 1.0;
 
 const TRANSPARENT: Color = Color::new(0, 0, 0, 0);
@@ -29,8 +31,6 @@ const TRANSPARENT: Color = Color::new(0, 0, 0, 0);
 // lower is better, higher is cheaper
 // more than one => glitchy
 const STRAIGHT_THRESHOLD: f32 = 0.5;
-
-const DEG_90: f32 = core::f32::consts::PI * 0.5;
 
 /// Super-Sampling Anti-Aliasing Configuration
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -54,9 +54,27 @@ impl SsaaConfig {
     }
 }
 
+/// Texture handle created using a [`Canvas`]
 #[derive(Copy, Clone, Debug)]
 pub struct BitmapHandle(usize);
 
+impl BitmapHandle {
+    /// Forge a [`BitmapHandle`]
+    ///
+    /// This function is made available for implementations of [`Canvas`] outside of this crate.
+    pub unsafe fn forge(inner: usize) -> Self {
+        Self(inner)
+    }
+
+    /// Leak the inner usize
+    ///
+    /// This function is made available for implementations of [`Canvas`] outside of this crate.
+    pub unsafe fn leak(&self) -> usize {
+        self.0
+    }
+}
+
+/// The expected content of a filled path
 #[derive(Copy, Clone, Debug)]
 pub enum Texture<'a> {
     SolidColor(Color),
@@ -79,16 +97,11 @@ pub enum Texture<'a> {
 
 /// A 4-byte color (RGBA)
 pub type Color = rgb::RGBA<u8>;
-pub type Point = Vec2<f32>;
-type BoundingBox = Vec2<(f32, f32)>;
 
-#[derive(Copy, Clone, Debug, Default)]
-#[repr(C)]
-pub struct Rectangle {
-    top_left: Point,
-    size: Vec2<f32>,
-    border_radius: f32,
-}
+/// Pixel or Subpixel coordinates
+pub type Point = Vec2<f32>;
+
+type BoundingBox = Vec2<(f32, f32)>;
 
 /// Cubic Bezier Curve, made of 4 control points
 #[derive(Copy, Clone, Debug, Default)]
@@ -100,6 +113,7 @@ pub struct CubicBezier {
     pub c4: Point,
 }
 
+/// The trait that rendering backends must implement
 pub trait Canvas {
     fn framebuffer_size(&self) -> Vec2<usize>;
 
@@ -131,84 +145,6 @@ fn travel(a: Point, b: Point, t: f32) -> Point {
 }
 
 impl CubicBezier {
-    fn reversed(self, actually: bool) -> Self {
-        match actually {
-            true => CubicBezier {
-                c1: self.c4,
-                c2: self.c3,
-                c3: self.c2,
-                c4: self.c1,
-            },
-            false => self,
-        }
-    }
-
-    fn offset(&self, normal_factor: f32) -> Self {
-        let side1 = travel(self.c1, self.c2, 0.5);
-        let side2 = travel(self.c2, self.c3, 0.5);
-        let side3 = travel(self.c3, self.c4, 0.5);
-
-        let this_norm_c1 = (self.c2 - self.c1).normalized().rotated_z(DEG_90) * normal_factor;
-        let this_norm_c2 = (side2 - side1).normalized().rotated_z(DEG_90) * normal_factor;
-        let this_norm_c3 = (side3 - side2).normalized().rotated_z(DEG_90) * normal_factor;
-        let this_norm_c4 = (self.c4 - self.c3).normalized().rotated_z(DEG_90) * normal_factor;
-
-
-        CubicBezier {
-            c1: self.c1 + this_norm_c1,
-            c2: self.c2 + this_norm_c2,
-            c3: self.c3 + this_norm_c3,
-            c4: self.c4 + this_norm_c4,
-        }
-    }
-
-    // along normal
-    fn eval_and_offset(&self, t: f32, normal_factor: f32) -> Point {
-        let side1 = travel(self.c1, self.c2, t);
-        let side2 = travel(self.c2, self.c3, t);
-        let side3 = travel(self.c3, self.c4, t);
-
-        let diag1 = travel(side1, side2, t);
-        let diag2 = travel(side2, side3, t);
-
-        let split_point = travel(diag1, diag2, t);
-        let offset = (diag2 - diag1).normalized().rotated_z(DEG_90) * normal_factor;
-
-        split_point + offset
-    }
-
-    // used by util::contour
-    fn max_offset_error(&self, offset_curve: &Self, offset: f32, steps: usize) -> f32 {
-        let step_inc = 1.0 / (steps as f32);
-        let mut t = step_inc;
-        let mut max_error = 0.0;
-
-        for _ in 0..(steps - 1) {
-            let expected = self.eval_and_offset(t, offset);
-            let actual = offset_curve.eval_and_offset(t, 0.0);
-            let error = expected.distance(actual);
-
-            if max_error < error {
-                max_error = error;
-            }
-
-            t += step_inc;
-        }
-
-        max_error
-    }
-
-    fn eval(self, t: f32) -> Point {
-        let side1 = travel(self.c1, self.c2, t);
-        let side2 = travel(self.c2, self.c3, t);
-        let side3 = travel(self.c3, self.c4, t);
-
-        let diag1 = travel(side1, side2, t);
-        let diag2 = travel(side2, side3, t);
-
-        travel(diag1, diag2, t)
-    }
-
     fn quick_max_len(&self) -> f32 {
         let a = self.c1.distance_squared(self.c2);
         let b = self.c2.distance_squared(self.c3);

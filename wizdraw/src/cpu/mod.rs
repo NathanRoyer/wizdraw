@@ -6,10 +6,10 @@ mod bitmap;
 mod worker;
 mod texture;
 
-pub(crate) mod seq;
+mod seq;
 
-#[cfg(feature = "simd")]
-pub mod simd;
+#[cfg(any(doc, feature = "simd"))]
+mod simd;
 
 use worker::Worker;
 use bitmap::Bitmaps;
@@ -31,6 +31,7 @@ pub struct Canvas {
 }
 
 impl Canvas {
+    /// Create a basic in-memory canvas
     pub fn new_seq(width: usize, height: usize) -> Canvas {
         let sz = width * height;
         Canvas {
@@ -42,7 +43,11 @@ impl Canvas {
         }
     }
 
-    #[cfg(feature = "simd")]
+    /// Create a SIMD-accelerated in-memory canvas
+    ///
+    /// Available when the `simd` feature is enabled.
+    ///
+    #[cfg(any(feature = "simd", doc))]
     pub fn new_simd(width: usize, height: usize) -> Canvas {
         let sz = width * height;
         Canvas {

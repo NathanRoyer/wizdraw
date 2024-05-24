@@ -76,9 +76,6 @@ pub fn rainbow(point: Point) -> Color {
     ][i]
 }
 
-fn f32_min(a: f32, b: &f32) -> f32 { f32::min(a, *b) }
-fn f32_max(a: f32, b: &f32) -> f32 { f32::max(a, *b) }
-
 impl Bitmap {
     fn sample(&self, texture_offset: Point) -> Color {
         let x = texture_offset.x as usize;

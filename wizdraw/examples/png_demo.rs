@@ -1,13 +1,15 @@
 use rgb::{ComponentBytes, AsPixels};
-use wizdraw::{CubicBezier, Canvas, Color, Texture, Point, util, SsaaConfig};
+use wizdraw::{CubicBezier, Canvas, Color, Texture, Point, contour, SsaaConfig};
 
 use std::time::Instant;
 
 use std::fs::File;
 use std::io::BufWriter;
 
-fn read_png(path: &str) -> (usize, usize, Vec<u8>) {
-    let decoder = png::Decoder::new(File::open(path).unwrap());
+const GRID_PNG: &'static [u8] = include_bytes!("../../misc/grid.png");
+
+fn read_grid_png() -> (usize, usize, Vec<u8>) {
+    let decoder = png::Decoder::new(GRID_PNG);
     let mut reader = decoder.read_info().unwrap();
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).unwrap();
@@ -17,7 +19,7 @@ fn read_png(path: &str) -> (usize, usize, Vec<u8>) {
 
 fn main() {
     let w = 1000;
-    let h = 1000;
+    let h = 800;
 
     let wf = w as f32;
     let hf = h as f32;
@@ -40,13 +42,13 @@ fn main() {
         },
     ];
 
-    let (tex_w, tex_h, tex_p) = read_png("/home/bitsneak/Pictures/discord-pp.png");
+    let (tex_w, tex_h, tex_p) = read_grid_png();
 
     let mut line = Vec::new();
-    util::contour(path.as_slice(), 5.0, &mut line, 1.0);
+    contour(path.as_slice(), 5.0, &mut line, 0.5);
 
-    let myrtle = Color::new(255, 100, 100, 255);
-    let contour = Texture::SolidColor(myrtle);
+    let green = Color::new(100, 200, 150, 255);
+    let contour = Texture::SolidColor(green);
 
     for ssaa in [SsaaConfig::X4] {
         for canvas in [&mut canvas_seq, &mut canvas_simd] {
@@ -56,22 +58,24 @@ fn main() {
             canvas.fill_bitmap(bitmap, 0, 0, tex_w, tex_h, tex_p.as_pixels());
 
             let texture = Texture::QuadBitmap {
-                top_left:  Point::new(0.400 * wf, 0.400 * hf),
-                top_right: Point::new(0.600 * wf, 0.350 * hf),
-                btm_left:  Point::new(0.400 * wf, 0.600 * hf),
-                btm_right: Point::new(0.600 * wf, 0.650 * hf),
+                top_left:  Point::new(0.410 * wf, 0.300 * hf),
+                top_right: Point::new(0.590 * wf, 0.370 * hf),
+                btm_left:  Point::new(0.410 * wf, 0.700 * hf),
+                btm_right: Point::new(0.590 * wf, 0.630 * hf),
                 bitmap,
             };
 
             if true {
                 let then = Instant::now();
-                let num = 100;
-                for _ in 0..100 {
-                    canvas.fill_cbc(&path, &Texture::SolidColor(Color::new(100, 50, 50, 255)), false, ssaa);
+                let num = 20;
+                for _ in 0..num {
+                    canvas.fill_cbc(&path, &Texture::Debug, false, ssaa);
                     canvas.fill_cbc(&path, &texture, false, ssaa);
                     canvas.fill_cbc(&line, &contour, false, ssaa);
                 }
-                println!("{:?}: {}ms", ssaa, then.elapsed().as_millis() / num);
+                let avg_ms = then.elapsed().as_millis() / num;
+                let fps = 1000 / avg_ms;
+                println!("{:?}: {}ms = {} FPS", ssaa, avg_ms, fps);
             }
         }
     }

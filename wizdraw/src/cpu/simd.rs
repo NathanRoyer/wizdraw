@@ -232,22 +232,3 @@ const fn simd_f32<const L: usize>(n: f32) -> SimdF32<L> where Lc<L>: Slc {
 const fn simd_i32<const L: usize>(n: i32) -> SimdI32<L> where Lc<L>: Slc {
     SimdI32::from_array([n; L])
 }
-
-const fn simd_p<const L: usize>(p: Point) -> SimdPoint<L> where Lc<L>: Slc {
-    SimdPoint::new(simd_f32(p.x), simd_f32(p.y))
-}
-
-const fn simd_spm<const P: usize, const L: usize>(offset: usize) -> SimdPoint<L> where Lc<L>: Slc {
-    let xy = ssaa_subpixel_map::<P>();
-
-    let mut x = [0.0; 16];
-    let mut y = [0.0; 16];
-    let mut i = 0;
-    while i < L {
-        x[i] = xy[offset + i].0;
-        y[i] = xy[offset + i].1;
-        i += 1;
-    }
-
-    SimdPoint::new(SimdF32::from_slice(&x), SimdF32::from_slice(&y))
-}

@@ -1,6 +1,77 @@
 use super::*;
 use alloc::vec::Vec;
 
+const DEG_90: f32 = core::f32::consts::PI * 0.5;
+
+impl CubicBezier {
+    fn reversed(self, actually: bool) -> Self {
+        match actually {
+            true => CubicBezier {
+                c1: self.c4,
+                c2: self.c3,
+                c3: self.c2,
+                c4: self.c1,
+            },
+            false => self,
+        }
+    }
+
+    fn offset(&self, normal_factor: f32) -> Self {
+        let side1 = travel(self.c1, self.c2, 0.5);
+        let side2 = travel(self.c2, self.c3, 0.5);
+        let side3 = travel(self.c3, self.c4, 0.5);
+
+        let this_norm_c1 = (self.c2 - self.c1).normalized().rotated_z(DEG_90) * normal_factor;
+        let this_norm_c2 = (side2 - side1).normalized().rotated_z(DEG_90) * normal_factor;
+        let this_norm_c3 = (side3 - side2).normalized().rotated_z(DEG_90) * normal_factor;
+        let this_norm_c4 = (self.c4 - self.c3).normalized().rotated_z(DEG_90) * normal_factor;
+
+
+        CubicBezier {
+            c1: self.c1 + this_norm_c1,
+            c2: self.c2 + this_norm_c2,
+            c3: self.c3 + this_norm_c3,
+            c4: self.c4 + this_norm_c4,
+        }
+    }
+
+    // along normal
+    fn eval_and_offset(&self, t: f32, normal_factor: f32) -> Point {
+        let side1 = travel(self.c1, self.c2, t);
+        let side2 = travel(self.c2, self.c3, t);
+        let side3 = travel(self.c3, self.c4, t);
+
+        let diag1 = travel(side1, side2, t);
+        let diag2 = travel(side2, side3, t);
+
+        let split_point = travel(diag1, diag2, t);
+        let offset = (diag2 - diag1).normalized().rotated_z(DEG_90) * normal_factor;
+
+        split_point + offset
+    }
+
+    // used by util::contour
+    fn max_offset_error(&self, offset_curve: &Self, offset: f32, steps: usize) -> f32 {
+        let step_inc = 1.0 / (steps as f32);
+        let mut t = step_inc;
+        let mut max_error = 0.0;
+
+        for _ in 0..(steps - 1) {
+            let expected = self.eval_and_offset(t, offset);
+            let actual = offset_curve.eval_and_offset(t, 0.0);
+            let error = expected.distance(actual);
+
+            if max_error < error {
+                max_error = error;
+            }
+
+            t += step_inc;
+        }
+
+        max_error
+    }
+}
+
 /// Creates a Contour composite bezier curve based on another one.
 ///
 /// Input paths which don't start where they end are valid.
@@ -15,8 +86,7 @@ use alloc::vec::Vec;
 /// bigger than the input (in number of curves), especially if `max_error` is low.
 /// With `max_error` = `1.0`, The output can typically get 2-4x bigger than the input.
 ///
-/// The author's advice: let Rust manage the vector's capacity but re-use the vector between frames.
-#[cfg(feature = "stroke")]
+/// Author's advice: let Rust manage the vector's capacity but re-use the vector between frames.
 pub fn contour(shape: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>, max_error: f32) {
     output.clear();
 
