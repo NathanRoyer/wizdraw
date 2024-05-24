@@ -1,5 +1,5 @@
 /target
 /Cargo.lock
-/flamegraph.svg
-/perf.data*
+flamegraph.svg
+perf.data*
 /*.zip

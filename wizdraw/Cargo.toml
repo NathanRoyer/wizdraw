@@ -1,0 +1,24 @@
+[package]
+name = "wizdraw"
+version = "2.1.0"
+edition = "2021"
+authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
+description = "Tiny no_std crate to fill and stroke composite bezier curves (SIMD/SSAA)"
+license = "MIT"
+keywords = [ "vector-graphics", "render", "svg", "no_std", "simd" ]
+repository = "https://github.com/NathanRoyer/wizdraw"
+categories = [ "rendering", "no-std" ]
+
+[dependencies]
+vek = { version = "0.17", default-features = false, features = ["libm"] }
+rgb = { version = "0.8" }
+
+[features]
+default = [ "contour", "shapes" ]
+contour = []
+shapes = []
+simd = []
+std = []
+
+[dev-dependencies]
+png = "0.17"

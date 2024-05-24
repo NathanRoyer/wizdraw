@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Wizdraw WebGL</title>
+        <style type="text/css">
+html, body {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    left: 0;
+    top: 0;
+    overflow: hidden;
+    background-color: #acc;
+}
+
+canvas {
+    position: absolute;
+    z-index: 0;
+    width: 512px;
+    height: 512px;
+}
+
+h3 {
+    position: absolute;
+    top: 0; left: 0;
+    z-index: 1;
+    margin: 1em;
+}
+        </style>
+    </head>
+    <body>
+        <h3 id="fps-log">hey</h3>
+        <canvas id="fb-canvas"></canvas>
+        <script type="text/javascript">
+let gl, opacityProgram, opacity_fb, colorProgram, positionBuffer;
+
+let next_texture, prev_texture;
+
+let opacity_v = `#version 100
+precision highp float;
+attribute vec4 a_position;
+void main() {
+    gl_Position = a_position;
+}
+`;
+ 
+let opacity_f = `#version 100
+precision highp float;
+
+uniform sampler2D prev_iteration;
+const float TEXTURE_SIZE = 512.0;
+const int CAPACITY = 128;
+
+uniform float path[CAPACITY];
+uniform int path_len;
+uniform bool init;
+
+const float epsilon = 0.0001;
+
+int use_segment_for_pip(vec2 p, vec2 s, vec2 e) {
+    vec2 v1 = p - s;
+    vec2 v2 = e - s;
+    float d = v1.x * v2.y - v1.y * v2.x;
+
+    bool b1 = s.y <= p.y;
+    bool b2 = e.y > p.y;
+    bool b3 = d > epsilon;
+
+    bool dec = ( b1) && ( b2) && ( b3);
+    bool inc = (!b1) && (!b2) && (!b3);
+
+    return int(inc) - int(dec);
+}
+
+void main() {
+    vec2 win_pos = gl_FragCoord.xy;
+    vec2 tex_pos = win_pos / TEXTURE_SIZE;
+
+    // one bit number
+    bool wind_num = false;
+
+    if (init) {
+        vec4 rgba = texture2D(prev_iteration, tex_pos);
+        wind_num = rgba.x != 0.0;
+    }
+
+    vec2 s = vec2(path[0], path[1]);
+    // vertical flip
+    win_pos.y = TEXTURE_SIZE - win_pos.y;
+
+    for (int i = 2; i < CAPACITY; i += 2) {
+        if (i >= path_len) break;
+
+        float x = path[i + 0];
+        float y = path[i + 1];
+        vec2 e = vec2(x, y);
+
+        int wind_num_inc = use_segment_for_pip(win_pos, s, e);
+        s = e;
+
+        bool toggle = wind_num_inc == 0;
+        if (toggle) wind_num = !wind_num;
+    }
+
+    float r = wind_num ? 1.0 : 0.0;
+    gl_FragColor = vec4(r, 0.5, 0.5, 1);
+}
+
+`;
+
+let color_v = `#version 100
+precision highp float;
+attribute vec4 a_position;
+void main() {
+    gl_Position = a_position;
+}
+`;
+ 
+let color_f = `#version 100
+precision highp float;
+
+uniform vec2 window_size;
+uniform sampler2D opacity;
+
+void main() {
+    vec2 pos = gl_FragCoord.xy / window_size;
+    vec4 rgba = texture2D(opacity, pos);
+
+    if (rgba.x == 1.0) {
+        // it's in
+        gl_FragColor = vec4(pos, 0.5, 1);
+    } else {
+        // it's out
+        gl_FragColor = vec4(0);
+    }
+}
+`;
+
+
+function refreshCanvasSize() {
+    // gl.canvas.width = 512;
+    // gl.canvas.height = 512;
+    // gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+    gl.useProgram(colorProgram);
+    let col_wsz_loc = gl.getUniformLocation(colorProgram, "window_size");
+    gl.uniform2f(col_wsz_loc, gl.canvas.width, gl.canvas.height);
+}
+
+function createShader(type, source) {
+    let shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    console.warn(gl.getShaderInfoLog(shader));
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        gl.deleteShader(shader);
+        panic('WebGL Shader Creation Error');
+    }
+
+    return shader;
+}
+
+function createProgram(vertexShader, fragmentShader) {
+    let program = gl.createProgram();
+
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    gl.validateProgram(program);
+    console.warn(gl.getProgramInfoLog(program));
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        gl.deleteProgram(program);
+        panic('WebGL Program Creation Error');
+    }
+
+    return program;
+}
+
+function drawRectangle(p1, p2) {
+    let positions = new Float32Array([
+        p1.x, p1.y,
+        p1.x, p2.y,
+        p2.x, p1.y,
+        p2.x, p2.y,
+    ]);
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+
+    let offset = 0, count = 4;
+    gl.drawArrays(gl.TRIANGLE_STRIP, offset, count);
+}
+
+let frames = 0;
+
+function process_segments(path) {
+    let orig_path_len = path.length;
+    for (let i = path.length; i < 128; i++) {
+        path.push(0);
+    }
+
+    gl.useProgram(opacityProgram);
+    gl.uniform1fv(gl.getUniformLocation(opacityProgram, "path"), path);
+    gl.uniform1i(gl.getUniformLocation(opacityProgram, "path_len"), orig_path_len);
+
+    gl.bindTexture(gl.TEXTURE_2D, prev_texture);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, opacity_fb);
+    attachTextureFrameBuffer(next_texture);
+
+    gl.viewport(0, 0, 512, 512);
+
+    drawRectangle({ x: -1.0, y: -1.0 }, { x: 1.0, y: 1.0 });
+
+    let tmp = prev_texture;
+    prev_texture = next_texture;
+    next_texture = tmp;
+}
+
+function render() {
+    gl.bindTexture(gl.TEXTURE_2D, prev_texture);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, 512, 512);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(colorProgram);
+
+    drawRectangle({ x: -1.0, y: -1.0 }, { x: 1.0, y: 1.0 });
+}
+
+let mx = 350.0, my = 350.0;
+
+function on_mouse_move(e) {
+    mx = e.clientX;
+    my = e.clientY;
+}
+
+function loop() {
+    process_segments([
+        100.0, 100.0,
+        400.0, 100.0,
+        mx, my,
+        100.0, 400.0,
+        100.0, 100.0,
+    ]);
+
+    render();
+    frames++;
+
+    setTimeout(loop, 16);
+}
+
+function initCanvas() {
+    setInterval(logFps, 100);
+
+    gl.canvas.width = 512;
+    gl.canvas.height = 512;
+
+    opacityProgram = createProgram(
+        createShader(gl.VERTEX_SHADER, opacity_v),
+        createShader(gl.FRAGMENT_SHADER, opacity_f),
+    );
+
+    prev_texture = createTexture();
+    next_texture = createTexture();
+    opacity_fb = createTextureFramebuffer();
+
+    colorProgram = createProgram(
+        createShader(gl.VERTEX_SHADER, color_v),
+        createShader(gl.FRAGMENT_SHADER, color_f),
+    );
+
+    gl.useProgram(opacityProgram);
+
+    let opacity_pos_attr_loc = gl.getAttribLocation(opacityProgram, "a_position");
+    let color_pos_attr_loc = gl.getAttribLocation(colorProgram, "a_position");
+
+    positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.enableVertexAttribArray(opacity_pos_attr_loc);
+    gl.enableVertexAttribArray(color_pos_attr_loc);
+
+    let struct = 2, type = gl.FLOAT, normalize = false, stride = 0, offset = 0;
+    gl.vertexAttribPointer(opacity_pos_attr_loc, struct, type, normalize, stride, offset);
+    gl.vertexAttribPointer(color_pos_attr_loc, struct, type, normalize, stride, offset);
+
+    refreshCanvasSize();
+    window.addEventListener("resize", refreshCanvasSize);
+
+    loop();
+}
+
+function onLoad() {
+    let canvas = document.getElementById('fb-canvas');
+    gl = canvas.getContext('webgl');
+
+    if (!gl) {
+        alert("Your browser doesn't support WebGL; this application cannot run.");
+    }
+
+    document.body.addEventListener('mousemove', on_mouse_move);
+
+    initCanvas();
+}
+
+function createTexture() {
+    const width = 512;
+    const height = 512;
+    const targetTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+    const level = 0;
+    const internalFormat = gl.RGB;
+    const border = 0;
+    const format = internalFormat;
+    const type = gl.UNSIGNED_SHORT_5_6_5;
+    const data = null; // new Uint16Array(width * height);
+    gl.texImage2D(
+        gl.TEXTURE_2D,
+        level,
+        internalFormat,
+        width,
+        height,
+        border,
+        format,
+        type,
+        data,
+    );
+
+    return targetTexture;
+}
+
+function createTextureFramebuffer() {
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    return fb;
+}
+
+function attachTextureFrameBuffer(texture) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, opacity_fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+}
+
+function logFps() {
+    document.getElementById('fps-log').innerText = (frames * 10).toString() + " FPS";
+    frames = 0;
+}
+
+function panic(msg) {
+    alert(msg);
+    throw msg;
+}
+
+addEventListener("load", onLoad);
+        </script>
+    </body>
+</html>
