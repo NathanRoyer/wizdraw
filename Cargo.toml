@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [ "wizdraw" ]
+members = [ "wizdraw", "wizdraw-demo-web" ]
 
 # [profile.release]
 # debug = true

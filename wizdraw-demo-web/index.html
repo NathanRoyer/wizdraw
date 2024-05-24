@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
+        <style type="text/css">
+html, body, canvas {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    left: 0;
+    top: 0;
+    overflow: hidden;
+    background-color: #acc;
+}
+
+canvas {
+    z-index: 0;
+}
+
+h3 {
+    position: absolute;
+    top: 0; left: 0;
+    z-index: 1;
+    margin: 1em;
+}
+        </style>
+    </head>
+    <body>
+        <canvas id="canvas"></canvas>
+        <script type="module">
+            import init, { frame } from './wizdraw_demo_web.js';
+
+            let running = true;
+            let x = 0.0;
+            let y = 0.0;
+
+            function update_frame() {
+                let startTime = performance.now();
+                frame(x, y);
+                let endTime = performance.now();
+                document.title = Math.round(1000 / (endTime - startTime)).toString() + ' FPS';
+                if (running) setTimeout(update_frame, 16);
+            }
+
+            async function run() {
+                await init();
+
+                document.body.addEventListener('click', () => running = false);
+                document.body.addEventListener('mousemove', e => {
+                    x = e.clientX;
+                    y = e.clientY;
+                });
+
+                update_frame();
+            }
+
+            run();
+        </script>
+    </body>
+</html>

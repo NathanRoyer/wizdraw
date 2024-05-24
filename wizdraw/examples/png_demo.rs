@@ -50,7 +50,7 @@ fn main() {
     let green = Color::new(100, 200, 150, 255);
     let contour = Texture::SolidColor(green);
 
-    for ssaa in [SsaaConfig::X4] {
+    for ssaa in [SsaaConfig::None, SsaaConfig::X4, SsaaConfig::X16] {
         for canvas in [&mut canvas_seq, &mut canvas_simd] {
             canvas.clear();
 
@@ -67,7 +67,7 @@ fn main() {
 
             if true {
                 let then = Instant::now();
-                let num = 20;
+                let num = 50;
                 for _ in 0..num {
                     canvas.fill_cbc(&path, &Texture::Debug, false, ssaa);
                     canvas.fill_cbc(&path, &texture, false, ssaa);
@@ -80,7 +80,7 @@ fn main() {
         }
     }
 
-    let pixels = canvas_seq.pixels().as_bytes();
+    let pixels = canvas_simd.pixels().as_bytes();
 
     // converting to a PNG image
     let file = File::create("output.png").unwrap();

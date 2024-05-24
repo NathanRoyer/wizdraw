@@ -16,7 +16,7 @@ pub fn simd_sample(points: [Point; CAP], path: &[CubicBezier], holes: bool) -> [
     let mut i = 0;
     let mut out = [false; CAP];
 
-    while i < L {
+    while i < CAP {
         let points: [Point; L] = points[i..][..L].try_into().unwrap();
         let results = simd::subpixel_opacity::<L>(points, path, holes);
         out[i..][..L].copy_from_slice(&results);
