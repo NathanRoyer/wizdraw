@@ -35,7 +35,7 @@ h3 {
         <h3 id="fps-log">hey</h3>
         <canvas id="fb-canvas"></canvas>
         <script type="text/javascript">
-let gl, program, vertex_array, positionBuffer;
+let gl, program, positionBuffer;
 
 let vertexShaderSource = `#version 100
 
@@ -301,7 +301,6 @@ function drawCanvas() {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(program);
-    gl.bindVertexArray(vertex_array);
 
     drawRectangle({ x: -1.0, y: -1.0 }, { x: 1.0, y: 1.0 });
 
@@ -320,19 +319,8 @@ function initCanvas() {
     program = createProgram(vertexShader, fragmentShader);
 
     let positionAttributeLocation = gl.getAttribLocation(program, "a_position");
-
-    let positions = new Float32Array([
-        0, 0,
-        0, 0.5,
-        0.7, 0,
-    ]);
-
     positionBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
-
-    vertex_array = gl.createVertexArray();
-    gl.bindVertexArray(vertex_array);
     gl.enableVertexAttribArray(positionAttributeLocation);
 
     let struct = 2, type = gl.FLOAT, normalize = false, stride = 0, offset = 0;
@@ -369,10 +357,10 @@ function initCanvas() {
 
 function onLoad() {
     let canvas = document.getElementById('fb-canvas');
-    gl = canvas.getContext('webgl2');
+    gl = canvas.getContext('webgl');
 
     if (!gl) {
-        alert("Your browser doesn't support WebGL2; this application cannot run.");
+        alert("Your browser doesn't support WebGL; this application cannot run.");
     }
 
     initCanvas();
