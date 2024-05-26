@@ -38,17 +38,19 @@ h3 {
             let y = 0.0;
 
             function update_frame() {
-                let startTime = performance.now();
-                frame(x, y);
-                let endTime = performance.now();
-                document.title = Math.round(1000 / (endTime - startTime)).toString() + ' FPS';
-                if (running) setTimeout(update_frame, 16);
+                if (running) {
+                    let startTime = performance.now();
+                    frame(x, y);
+                    let endTime = performance.now();
+                    document.title = Math.round(1000 / (endTime - startTime)).toString() + ' FPS';
+                }
+                setTimeout(update_frame, 16);
             }
 
             async function run() {
                 await init();
 
-                document.body.addEventListener('click', () => running = false);
+                document.body.addEventListener('click', () => running = !running);
                 document.body.addEventListener('mousemove', e => {
                     x = e.clientX;
                     y = e.clientY;

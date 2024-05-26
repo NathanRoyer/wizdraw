@@ -11,6 +11,7 @@ type SimdU32<const L: usize> = Simd<u32, L>;
 type SimdI32<const L: usize> = Simd<i32, L>;
 type SimdBool<const L: usize> = Mask<i32, L>;
 type SimdPoint<const L: usize> = Vec2<SimdF32<L>>;
+type SimdBoundingBox<const L: usize> = Vec2<(SimdF32<L>, SimdF32<L>)>;
 
 #[derive(Copy, Clone, Debug)]
 pub struct SimdCubicBezier<const L: usize> where Lc<L>: Slc {
@@ -18,6 +19,7 @@ pub struct SimdCubicBezier<const L: usize> where Lc<L>: Slc {
     c2: SimdPoint<L>,
     c3: SimdPoint<L>,
     c4: SimdPoint<L>,
+    aabb: SimdBoundingBox<L>,
 }
 
 // |num| 1.0 / num.sqrt()
@@ -147,11 +149,16 @@ pub fn subpixel_opacity<const L: usize>(
 
 impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {
     fn init(curve: CubicBezier) -> Self {
+        let c1 = SimdPoint::new(simd_f32(curve.c1.x), simd_f32(curve.c1.y));
+        let c2 = SimdPoint::new(simd_f32(curve.c2.x), simd_f32(curve.c2.y));
+        let c3 = SimdPoint::new(simd_f32(curve.c3.x), simd_f32(curve.c3.y));
+        let c4 = SimdPoint::new(simd_f32(curve.c4.x), simd_f32(curve.c4.y));
         Self {
-            c1: SimdPoint::new(simd_f32(curve.c1.x), simd_f32(curve.c1.y)),
-            c2: SimdPoint::new(simd_f32(curve.c2.x), simd_f32(curve.c2.y)),
-            c3: SimdPoint::new(simd_f32(curve.c3.x), simd_f32(curve.c3.y)),
-            c4: SimdPoint::new(simd_f32(curve.c4.x), simd_f32(curve.c4.y)),
+            c1,
+            c2,
+            c3,
+            c4,
+            aabb: simd_aabb(c1, c2, c3, c4),
         }
     }
 
@@ -160,7 +167,7 @@ impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {
         t: SimdF32<L>,
     ) -> (Self, Self) {
 
-        // #[inline(always)]
+        #[inline(always)]
         fn travel<const L: usize>(
             a: SimdPoint<L>,
             b: SimdPoint<L>,
@@ -183,18 +190,22 @@ impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {
 
         let split_point = travel(diag1, diag2, t);
 
+        let aabb = simd_aabb(self.c1, side1, diag1, split_point);
         let first_part = Self {
             c1: self.c1,
             c2: side1,
             c3: diag1,
             c4: split_point,
+            aabb,
         };
 
+        let aabb = simd_aabb(split_point, diag2, side3, self.c4);
         let second_part = Self {
             c1: split_point,
             c2: diag2,
             c3: side3,
             c4: self.c4,
+            aabb,
         };
 
         (first_part, second_part)
@@ -205,17 +216,10 @@ impl<const L: usize> SimdCubicBezier<L> where Lc<L>: Slc {
         let simd_aabb_safe_margin = simd_f32(AABB_SAFE_MARGIN);
         let mut inside;
 
-        let min_x = self.c1.x.simd_min(self.c2.x).simd_min(self.c3.x).simd_min(self.c4.x);
-        inside  = (min_x - simd_aabb_safe_margin).simd_le(p.x);
-
-        let max_x = self.c1.x.simd_max(self.c2.x).simd_max(self.c3.x).simd_max(self.c4.x);
-        inside &= (max_x + simd_aabb_safe_margin).simd_ge(p.x);
-
-        let min_y = self.c1.y.simd_min(self.c2.y).simd_min(self.c3.y).simd_min(self.c4.y);
-        inside &= (min_y - simd_aabb_safe_margin).simd_le(p.y);
-
-        let max_y = self.c1.y.simd_max(self.c2.y).simd_max(self.c3.y).simd_max(self.c4.y);
-        inside &= (max_y + simd_aabb_safe_margin).simd_ge(p.y);
+        inside  = (self.aabb.x.0 - simd_aabb_safe_margin).simd_le(p.x);
+        inside &= (self.aabb.x.1 + simd_aabb_safe_margin).simd_ge(p.x);
+        inside &= (self.aabb.y.0 - simd_aabb_safe_margin).simd_le(p.y);
+        inside &= (self.aabb.y.1 + simd_aabb_safe_margin).simd_ge(p.y);
 
         inside
     }
@@ -231,4 +235,17 @@ const fn simd_f32<const L: usize>(n: f32) -> SimdF32<L> where Lc<L>: Slc {
 
 const fn simd_i32<const L: usize>(n: i32) -> SimdI32<L> where Lc<L>: Slc {
     SimdI32::from_array([n; L])
+}
+
+fn simd_aabb<const L: usize>(
+    c1: SimdPoint<L>,
+    c2: SimdPoint<L>,
+    c3: SimdPoint<L>,
+    c4: SimdPoint<L>,
+) -> SimdBoundingBox<L> where Lc<L>: Slc {
+    let min_x = c1.x.simd_min(c2.x).simd_min(c3.x).simd_min(c4.x);
+    let max_x = c1.x.simd_max(c2.x).simd_max(c3.x).simd_max(c4.x);
+    let min_y = c1.y.simd_min(c2.y).simd_min(c3.y).simd_min(c4.y);
+    let max_y = c1.y.simd_max(c2.y).simd_max(c3.y).simd_max(c4.y);
+    SimdBoundingBox::new((min_x, max_x), (min_y, max_y))
 }

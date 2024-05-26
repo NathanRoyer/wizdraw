@@ -51,7 +51,7 @@ fn main() {
     let contour = Texture::SolidColor(green);
 
     for ssaa in [SsaaConfig::None, SsaaConfig::X4, SsaaConfig::X16] {
-        for canvas in [&mut canvas_seq, &mut canvas_simd] {
+        for canvas in [/*&mut canvas_seq, */&mut canvas_simd] {
             canvas.clear();
 
             let bitmap = canvas.alloc_bitmap(tex_w, tex_h);
