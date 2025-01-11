@@ -2,5 +2,7 @@
 resolver = "2"
 members = [ "wizdraw", "wizdraw-demo-web" ]
 
+# plz use CARGO_PROFILE_RELEASE_DEBUG=true
+#
 # [profile.release]
 # debug = true

@@ -18,14 +18,14 @@ fn read_grid_png() -> (usize, usize, Vec<u8>) {
 }
 
 fn main() {
-    let w = 1000;
-    let h = 800;
+    let w = 1280;
+    let h = 720;
 
     let wf = w as f32;
     let hf = h as f32;
 
-    let mut canvas_simd = wizdraw::cpu::Canvas::new_simd(w, h);
-    let mut canvas_seq = wizdraw::cpu::Canvas::new_seq(w, h);
+    // let mut canvas_simd = wizdraw::cpu::Canvas::new_simd(w, h);
+    let mut canvas_seq = wizdraw::cpu::Canvas::new(w, h);
 
     let path = [
         CubicBezier {
@@ -50,8 +50,8 @@ fn main() {
     let green = Color::new(100, 200, 150, 255);
     let contour = Texture::SolidColor(green);
 
-    for ssaa in [SsaaConfig::None, SsaaConfig::X4, SsaaConfig::X16] {
-        for canvas in [/*&mut canvas_seq, */&mut canvas_simd] {
+    for ssaa in [SsaaConfig::None, SsaaConfig::X2, SsaaConfig::X4] {
+        for canvas in [&mut canvas_seq/*, &mut canvas_simd*/] {
             canvas.clear();
 
             let bitmap = canvas.alloc_bitmap(tex_w, tex_h);
@@ -67,11 +67,11 @@ fn main() {
 
             if true {
                 let then = Instant::now();
-                let num = 50;
+                let num = 20;
                 for _ in 0..num {
-                    canvas.fill_cbc(&path, &Texture::Debug, false, ssaa);
-                    canvas.fill_cbc(&path, &texture, false, ssaa);
-                    canvas.fill_cbc(&line, &contour, false, ssaa);
+                    canvas.fill_cbc(&path, &Texture::Debug, ssaa);
+                    canvas.fill_cbc(&path, &texture, ssaa);
+                    canvas.fill_cbc(&line, &contour, ssaa);
                 }
                 let avg_ms = then.elapsed().as_millis() / num;
                 let fps = 1000 / avg_ms;
@@ -80,7 +80,7 @@ fn main() {
         }
     }
 
-    let pixels = canvas_simd.pixels().as_bytes();
+    let pixels = canvas_seq.pixels().as_bytes();
 
     // converting to a PNG image
     let file = File::create("output.png").unwrap();

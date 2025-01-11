@@ -3,15 +3,20 @@ use super::*;
 use alloc::{vec, vec::Vec, boxed::Box};
 
 mod bitmap;
-mod worker;
 mod texture;
+mod tile;
 
-mod seq;
+// mod seq;
 
 #[cfg(any(doc, feature = "simd"))]
 mod simd;
 
-use worker::Worker;
+type IntPoint = Vec2<i32>;
+const PX_WIDTH: i32 = 32;
+const TILE_SIDE: usize = 32;
+const POINTS: usize = 256;
+
+use tile::TileIterator;
 use bitmap::Bitmaps;
 
 #[derive(Debug, Clone)]
@@ -25,69 +30,31 @@ struct Bitmap {
 pub struct Canvas {
     bitmaps: Bitmaps,
     pixels: Box<[Color]>,
-    mask: Box<[u8]>,
+    mask: Box<Mask>,
     size: Vec2<usize>,
-    worker: Worker,
 }
+
+type Mask = [[bool; TILE_SIDE]; TILE_SIDE];
 
 impl Canvas {
     /// Create a basic in-memory canvas
-    pub fn new_seq(width: usize, height: usize) -> Canvas {
+    pub fn new(width: usize, height: usize) -> Canvas {
         let sz = width * height;
         Canvas {
             bitmaps: Bitmaps::new(),
             pixels: vec![Default::default(); sz].into(),
-            mask: vec![0; sz].into(),
+            mask: vec![[false; TILE_SIDE]; TILE_SIDE].try_into().unwrap(),
             size: Vec2::new(width, height),
-            worker: Worker::new(worker::seq_sample),
         }
-    }
-
-    /// Create a SIMD-accelerated in-memory canvas
-    ///
-    /// Available when the `simd` feature is enabled.
-    ///
-    #[cfg(any(feature = "simd", doc))]
-    pub fn new_simd(width: usize, height: usize) -> Canvas {
-        let sz = width * height;
-        Canvas {
-            bitmaps: Bitmaps::new(),
-            pixels: vec![Default::default(); sz].into(),
-            mask: vec![0; sz].into(),
-            size: Vec2::new(width, height),
-            worker: Worker::new(worker::simd_sample),
-        }
-    }
-
-    fn tex_sample(
-        &self,
-        pixel: Point,
-        texture: &Texture,
-        ssaa: SsaaConfig,
-    ) -> Color {
-        let sampler = match ssaa {
-            SsaaConfig::None => Texture::sample::< 1>,
-            SsaaConfig::X2   => Texture::sample::< 2>,
-            SsaaConfig::X4   => Texture::sample::< 4>,
-            SsaaConfig::X8   => Texture::sample::< 8>,
-            SsaaConfig::X16  => Texture::sample::<16>,
-        };
-
-        sampler(texture, pixel, &self.bitmaps)
     }
 
     pub fn pixels(&self) -> &[Color] {
         &self.pixels
     }
-}
 
-fn add_margin(aabb: BoundingBox, x_lim: f32, y_lim: f32) -> Vec2<(usize, usize)> {
-    let min_x = (aabb.x.0 - AABB_SAFE_MARGIN).clamp(0.0, x_lim) as usize;
-    let max_x = (aabb.x.1 + AABB_SAFE_MARGIN).clamp(0.0, x_lim) as usize;
-    let min_y = (aabb.y.0 - AABB_SAFE_MARGIN).clamp(0.0, y_lim) as usize;
-    let max_y = (aabb.y.1 + AABB_SAFE_MARGIN).clamp(0.0, y_lim) as usize;
-
-    Vec2::new((min_x, max_x), (min_y, max_y))
+    fn tiles(&self, ssaa: SsaaConfig) -> TileIterator {
+        TileIterator::new(self.size, ssaa)
+    }
 }
 
 impl super::Canvas for Canvas {
@@ -140,132 +107,81 @@ impl super::Canvas for Canvas {
         &mut self,
         path: &[CubicBezier],
         texture: &Texture,
-        holes: bool,
         ssaa: SsaaConfig,
     ) {
-        if path.is_empty() {
-            return;
-        }
+        let boxes = path.iter().map(|c| c.aabb());
 
-        let w_f = self.size.x as f32;
-        let h_f = self.size.y as f32;
-        let x_lim = w_f - 1.0;
-        let y_lim = h_f - 1.0;
+        for mut tile in self.tiles(ssaa) {
 
-        let mut aabb = BoundingBox::new((w_f, 0.0), (h_f, 0.0));
-
-        for curve in path {
-            aabb = combine_aabb(aabb, curve.aabb());
-        }
-
-        let aabb = add_margin(aabb, x_lim, y_lim);
-
-        for y in aabb.y.0..=aabb.y.1 {
-            let line_offset = y * self.size.x;
-            self.mask[line_offset..][aabb.x.0..=aabb.x.1].fill(u8::MIN);
-        }
-
-        for curve in path {
-            const TRESHOLD: f32 = 2.0;
-            let mut t = 1.0;
-            let mut curve = *curve;
-
-            loop {
-                let (half_1, half_2) = curve.split(t);
-                let big_len = half_1.quick_max_len();
-
-                if cpu::seq::is_curve_straight(half_1) || big_len < TRESHOLD {
-                    let aabb_c = add_margin(half_1.aabb(), x_lim, y_lim);
-
-                    for y in aabb_c.y.0..=aabb_c.y.1 {
-                        let line_offset = y * self.size.x;
-                        self.mask[line_offset..][aabb_c.x.0..=aabb_c.x.1].fill(u8::MAX);
-                    }
-
-                    if t == 1.0 {
-                        break;
-                    }
-
-                    curve = half_2;
-                    t = 1.0;
-                } else {
-                    t *= 0.1;
+            if boxes.clone().any(|b| tile.overlaps(b)) {
+                let mut last_end = path.last().map(|c| c.c4);
+                for curve in path {
+                    assert_eq!(Some(curve.c1), last_end);
+                    last_end = Some(curve.c4);
+                    tile.advance(*curve, &mut self.mask);
                 }
-            }
-        }
 
-        for y in aabb.y.0..=aabb.y.1 {
-            for x in aabb.x.0..=aabb.x.1 {
-                let i = y * self.size.x + x;
+                tile.mask_pass(&mut self.mask);
 
-                let should_compute = self.mask[i] == u8::MAX;
-                let last_of_line = x == aabb.x.1;
+                tile.render(
+                    &mut self.pixels,
+                    self.size,
+                    &self.mask,
+                    texture,
+                    &self.bitmaps,
+                );
 
-                if should_compute || last_of_line {
-                    let point = Point::new(x as f32, y as f32);
-                    self.mask[i] = 1;
-                    self.worker.queue_ssaa(i, point, ssaa);
-                    self.worker.try_advance(path, &mut self.mask, holes);
-                }
-            }
-        }
-        
-        self.worker.force_advance(path, &mut self.mask, holes);
+                self.mask.iter_mut().for_each(|row| row.fill(false));
 
-        let mut line = &mut self.mask[aabb.y.0 * self.size.x..];
-        for _ in aabb.y.0..=aabb.y.1 {
-            let mut go_back = 0;
+            } else if tile.sample_oob(path) {
 
-            for x in aabb.x.0..=aabb.x.1 {
-                if line[x] == 0 {
-                    go_back += 1;
-                } else {
-                    let opacity = line[x] - 1;
-                    line[(x - go_back)..=x].fill(opacity);
-                    go_back = 0;
-                }
-            }
+                tile.render_all(
+                    &mut self.pixels,
+                    self.size,
+                    texture,
+                    &self.bitmaps,
+                );
 
-            line = &mut line[self.size.x..];
-        }
-
-        for y in aabb.y.0..=aabb.y.1 {
-            let line_offset = y * self.size.x;
-
-            for x in aabb.x.0..=aabb.x.1 {
-                let i = line_offset + x;
-                let opacity = self.mask[i];
-
-                if opacity > 0 {
-                    let opacity = 255u16 * (opacity as u16) / ssaa.as_mul();
-                    let point = Point::new(x as f32, y as f32);
-                    let color = self.tex_sample(point, texture, ssaa);
-                    self.pixels[i] = blend(color, self.pixels[i], opacity as u8);
-                }
             }
         }
     }
 }
 
-#[inline(always)]
-fn combine_aabb(a: BoundingBox, b: BoundingBox) -> BoundingBox {
-    let min_x = a.x.0.min(b.x.0);
-    let max_x = a.x.1.max(b.x.1);
+fn is_curve_straight(curve: CubicBezier) -> bool {
+    let close_enough = |p: Point| {
+        // https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points
 
-    let min_y = a.y.0.min(b.y.0);
-    let max_y = a.y.1.max(b.y.1);
+        let l = curve.c4 - curve.c1;
+        let a = l.x * (curve.c1.y - p.y);
+        let b = l.y * (curve.c1.x - p.x);
 
-    BoundingBox::new((min_x, max_x), (min_y, max_y))
+        // distance from p to projected point
+        let distance = (a - b).abs() * fast_inv_sqrt(l.x * l.x + l.y * l.y);
+
+        distance < STRAIGHT_THRESHOLD
+    };
+
+    close_enough(curve.c2) && close_enough(curve.c3)
 }
 
-fn blend(src: Color, dst: Color, opacity: u8) -> Color {
-    let mut src = rgb::RGBA::new(src.r as u16, src.g as u16, src.b as u16, src.a as u16);
-    let     dst = rgb::RGBA::new(dst.r as u16, dst.g as u16, dst.b as u16, dst.a as u16);
+// |num| 1.0 / num.sqrt()
+#[inline(always)]
+fn fast_inv_sqrt(num: f32) -> f32 {
+    f32::from_bits(0x5f37_5a86 - (num.to_bits() >> 1))
+}
+
+#[inline(always)]
+fn blend(src: Color, dst: Color) -> Color {
+    match src.a {
+        255 => return src,
+        0 => return dst,
+        _ => (),
+    };
+
+    let src = rgb::RGBA::new(src.r as u16, src.g as u16, src.b as u16, src.a as u16);
+    let dst = rgb::RGBA::new(dst.r as u16, dst.g as u16, dst.b as u16, dst.a as u16);
+
     let u8_max = u8::MAX as u16;
-
-    src.a *= opacity as u16;
-    src.a /= u8_max;
-
     let dst_a = u8_max - src.a;
 
     let out_r = (src.r * src.a + dst.r * dst_a) / u8_max;

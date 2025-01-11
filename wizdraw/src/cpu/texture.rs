@@ -1,27 +1,9 @@
 use super::*;
 use vek::num_traits::Euclid;
-use super::seq::use_segment_for_pip;
 
 impl Texture<'_> {
-    pub(super) fn sample<const P: usize>(
-        &self,
-        pixel: Point,
-        bitmaps: &Bitmaps,
-    ) -> Color {
-        use rgb::ComponentMap;
-
-        let mut res = rgb::RGBA::new(0, 0, 0, 0);
-
-        for offset in ssaa_subpixel_map::<P>() {
-            let point = pixel + Point::from(*offset);
-            let color = self.sample_once(point, bitmaps);
-            res += color.map(|byte| byte as u16);
-        }
-
-        res.map(|word| (word / (P as u16)) as u8)
-    }
-
-    fn sample_once(
+    #[inline(always)]
+    pub(super) fn sample(
         &self,
         pixel: Point,
         bitmaps: &Bitmaps,
@@ -60,6 +42,7 @@ impl Texture<'_> {
     }
 }
 
+#[inline(always)]
 pub fn rainbow(point: Point) -> Color {
     let point = point.map(|f| f as usize);
     let i = ((point.x + point.y) % 128) >> 4;
@@ -77,6 +60,7 @@ pub fn rainbow(point: Point) -> Color {
 }
 
 impl Bitmap {
+    #[inline(always)]
     fn sample(&self, texture_offset: Point) -> Color {
         let x = texture_offset.x as usize;
         let y = texture_offset.y as usize;
@@ -85,6 +69,7 @@ impl Bitmap {
         self.pixels.get(i).copied().unwrap_or(TRANSPARENT)
     }
 
+    #[inline(always)]
     pub fn sample_scaled(
         &self,
         pixel: Point,
@@ -112,6 +97,7 @@ impl Bitmap {
         self.sample((offset / scaled_size) * float_size)
     }
 
+    #[inline(always)]
     pub fn sample_quad(
         &self,
         point: Point,
@@ -138,14 +124,14 @@ impl Bitmap {
 
         // compute winding number
         let mut last_corner = btm_left;
-        let mut wind_num = 0i32;
+        let mut in_shape = false;
         for next_corner in quad {
-            wind_num += use_segment_for_pip(point, last_corner, next_corner);
+            in_shape ^= toggle_in_shape(point, last_corner, next_corner);
             last_corner = next_corner;
         }
 
         // return if point not in quad
-        if wind_num % 2 == 0 {
+        if !in_shape {
             return None;
         }
 
@@ -161,6 +147,7 @@ impl Bitmap {
 // https://iquilezles.org/articles/ibilinear/
 // https://www.gamedev.net/forums/topic/596392-uv-coordinate-on-a-2d-quadrilateral/
 //
+#[inline(always)]
 fn inverse_bilinear(
     pt: Point,
     tl: Point,
@@ -213,6 +200,7 @@ fn inverse_bilinear(
     }
 }
 
+#[inline(always)]
 fn is_p_ooaabb(p: Point, quad_x: [f32; 4], quad_y: [f32; 4]) -> bool {
     // find AABB
     let (min_x, max_x) = min_max(quad_x);
@@ -223,4 +211,20 @@ fn is_p_ooaabb(p: Point, quad_x: [f32; 4], quad_y: [f32; 4]) -> bool {
     let y_ooaabb = min_y > p.y || p.y > max_y;
 
     x_ooaabb || y_ooaabb
+}
+
+// Computes a one bit winding number increment/decrement
+#[inline(always)]
+fn toggle_in_shape(p: Point, s: Point, e: Point) -> bool {
+    let v1 = p - s;
+    let v2 = e - s;
+
+    let b1 = s.y <= p.y;
+    let b2 = e.y > p.y;
+    let b3 = (v1.x * v2.y) > (v1.y * v2.x);
+
+    let dec = ( b1) & ( b2) & ( b3);
+    let inc = (!b1) & (!b2) & (!b3);
+
+    inc != dec
 }

@@ -14,8 +14,9 @@ vek = { version = "0.17", default-features = false, features = ["libm"] }
 rgb = { version = "0.8" }
 
 [features]
-default = [ "contour" ]
+default = [ "contour", "shapes" ]
 contour = []
+shapes = []
 simd = []
 std = []
 

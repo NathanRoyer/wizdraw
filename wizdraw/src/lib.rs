@@ -5,7 +5,9 @@
 #![cfg_attr(feature = "simd", feature(slice_flatten))]
 
 extern crate alloc;
+extern crate std;
 pub extern crate rgb;
+pub extern crate vek;
 
 use vek::vec::Vec2;
 
@@ -18,41 +20,22 @@ mod contour;
 #[cfg(any(doc, feature = "contour"))]
 pub use contour::contour;
 
+#[cfg(any(doc, feature = "shapes"))]
+pub mod shapes;
+
 /// Implementations of [`Canvas`] using only the CPU
 pub mod cpu;
 
 // todo
 // pub mod opengl;
 
-const AABB_SAFE_MARGIN: f32 = 1.0;
+// const AABB_SAFE_MARGIN: f32 = 1.0;
 
 const TRANSPARENT: Color = Color::new(0, 0, 0, 0);
 
 // lower is better, higher is cheaper
 // more than one => glitchy
-const STRAIGHT_THRESHOLD: f32 = 0.5;
-
-/// Super-Sampling Anti-Aliasing Configuration
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum SsaaConfig {
-    None,
-    X2,
-    X4,
-    X8,
-    X16,
-}
-
-impl SsaaConfig {
-    fn as_mul(&self) -> u16 {
-        match self {
-            SsaaConfig::None =>  1,
-            SsaaConfig::X2   =>  2,
-            SsaaConfig::X4   =>  4,
-            SsaaConfig::X8   =>  8,
-            SsaaConfig::X16  => 16,
-        }
-    }
-}
+const STRAIGHT_THRESHOLD: f32 = 0.8;
 
 /// Texture handle created using a [`Canvas`]
 #[derive(Copy, Clone, Debug)]
@@ -129,11 +112,7 @@ pub trait Canvas {
     /// In other words: in the `path` slice, a curve at index N must end where the N+1 curve starts;
     /// additionally, the last curve must end where the first one starts.
     ///
-    /// If `holes` is true, path holes won't be filled; if it's false, path holes will be filled too.
-    /// If this sounds unclear, read the [Wikipedia entry on Winding Numbers](https://en.wikipedia.org/wiki/Winding_number):
-    /// Pixels which yield winding numbers other than -1, 0 and 1 are in holes.
-    ///
-    fn fill_cbc(&mut self, cbc: &[CubicBezier], texture: &Texture, holes: bool, ssaa: SsaaConfig);
+    fn fill_cbc(&mut self, cbc: &[CubicBezier], texture: &Texture, ssaa: SsaaConfig);
 }
 
 #[inline(always)]
@@ -145,14 +124,6 @@ fn travel(a: Point, b: Point, t: f32) -> Point {
 }
 
 impl CubicBezier {
-    fn quick_max_len(&self) -> f32 {
-        let a = self.c1.distance_squared(self.c2);
-        let b = self.c2.distance_squared(self.c3);
-        let c = self.c3.distance_squared(self.c4);
-
-        a + b + c
-    }
-
     fn split(self, t: f32) -> (Self, Self) {
         let side1 = travel(self.c1, self.c2, t);
         let side2 = travel(self.c2, self.c3, t);
@@ -203,54 +174,92 @@ fn min_max(input: [f32; 4]) -> (f32, f32) {
     (min, max)
 }
 
-const fn ssaa_subpixel_map<const P: usize>() -> &'static [(f32, f32)] {
-    match P {
-        1 => &[(0.0, 0.0)],
-        2 => &[(-0.25, -0.25), (0.25, 0.25)],
-        4 => &[
-            (-0.25, -0.25),
-            (-0.25,  0.25),
-            ( 0.25, -0.25),
-            ( 0.25,  0.25),
-        ],
-        8 => &[
-            (-0.125, -0.125),
-            (-0.375, -0.375),
+type SubPixelOffsets = &'static [(f32, f32)];
 
-            (-0.125,  0.125),
-            (-0.375,  0.375),
+/// Super-Sampling Anti-Aliasing Configuration
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SsaaConfig {
+    None,
+    X2,
+    X4,
+    X8,
+    X16,
+}
 
-            ( 0.125, -0.125),
-            ( 0.375, -0.375),
+impl SsaaConfig {
+    fn as_mul<T: From<u8>>(&self) -> T {
+        match self {
+            SsaaConfig::None =>  1,
+            SsaaConfig::X2   =>  2,
+            SsaaConfig::X4   =>  4,
+            SsaaConfig::X8   =>  8,
+            SsaaConfig::X16  => 16,
+        }.into()
+    }
 
-            ( 0.125,  0.125),
-            ( 0.375,  0.375),
-        ],
-        16 => &[
-            (-0.125, -0.125),
-            (-0.375, -0.375),
+    const fn offsets(&self) -> SubPixelOffsets {
+        match self {
+            Self::None => &[(0.0, 0.0)],
+            Self::X2 => &[(-0.25, -0.25), (0.25, 0.25)],
+            Self::X4 => &[
+                (-0.25, -0.25),
+                (-0.25,  0.25),
+                ( 0.25, -0.25),
+                ( 0.25,  0.25),
+            ],
+            Self::X8 => &[
+                (-0.125, -0.125),
+                (-0.375, -0.375),
 
-            (-0.125,  0.125),
-            (-0.375,  0.375),
+                (-0.125,  0.125),
+                (-0.375,  0.375),
 
-            ( 0.125, -0.125),
-            ( 0.375, -0.375),
+                ( 0.125, -0.125),
+                ( 0.375, -0.375),
 
-            ( 0.125,  0.125),
-            ( 0.375,  0.375),
+                ( 0.125,  0.125),
+                ( 0.375,  0.375),
+            ],
+            Self::X16 => &[
+                (-0.125, -0.125),
+                (-0.375, -0.375),
 
-            (-0.125, -0.375),
-            (-0.375, -0.125),
+                (-0.125,  0.125),
+                (-0.375,  0.375),
 
-            (-0.125,  0.375),
-            (-0.375,  0.125),
+                ( 0.125, -0.125),
+                ( 0.375, -0.375),
 
-            ( 0.125, -0.375),
-            ( 0.375, -0.125),
+                ( 0.125,  0.125),
+                ( 0.375,  0.375),
 
-            ( 0.125,  0.375),
-            ( 0.375,  0.125),
-        ],
-        _ => panic!("unsupported SSAA configuration"),
+                (-0.125, -0.375),
+                (-0.375, -0.125),
+
+                (-0.125,  0.375),
+                (-0.375,  0.125),
+
+                ( 0.125, -0.375),
+                ( 0.375, -0.125),
+
+                ( 0.125,  0.375),
+                ( 0.375,  0.125),
+            ],
+        }
+    }
+}
+
+// looks dumb but improves performance
+// because the operand is a const
+#[macro_export]
+macro_rules! const_ssaa {
+    ($ssaa:expr, $a:expr, $op:tt) => {
+        match $ssaa {
+            SsaaConfig::None => $a $op 1,
+            SsaaConfig::X2 => $a $op 2,
+            SsaaConfig::X4 => $a $op 4,
+            SsaaConfig::X8 => $a $op 8,
+            SsaaConfig::X16 => $a $op 16,
+        }
     }
 }

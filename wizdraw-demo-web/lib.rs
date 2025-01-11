@@ -8,7 +8,7 @@ static WIZDRAW: Mutex<Option<(cpu::Canvas, Option<BitmapHandle>)>> = Mutex::new(
 #[wasm_bindgen(start)]
 fn init() -> Result<(), JsValue> {
     let mut locked = WIZDRAW.lock().unwrap();
-    *locked = Some((cpu::Canvas::new_seq(0, 0), None));
+    *locked = Some((cpu::Canvas::new(0, 0), None));
     Ok(())
 }
 
@@ -43,7 +43,7 @@ pub fn frame(x: f32, y: f32) -> Result<(), JsValue> {
     let size = wizdraw.framebuffer_size().map(|u| u as u32);
 
     if size.x != w || size.y != h {
-        *wizdraw = cpu::Canvas::new_seq(w as _, h as _);
+        *wizdraw = cpu::Canvas::new(w as _, h as _);
         let (tex_w, tex_h, tex_p) = read_grid_png();
         *bitmap = Some(wizdraw.alloc_bitmap(tex_w, tex_h));
         wizdraw.fill_bitmap(bitmap.unwrap(), 0, 0, tex_w, tex_h, tex_p.as_pixels());
@@ -52,43 +52,28 @@ pub fn frame(x: f32, y: f32) -> Result<(), JsValue> {
     let wf = 1000.0;
     let hf = 1000.0;
 
-    let oval = [
-        CubicBezier {
-            c1: Point::new(300.0, 300.0),
-            c2: Point::new(300.0, 300.0),
-            c3: Point::new(700.0, 300.0),
-            c4: Point::new(700.0, 300.0),
-        },
-        CubicBezier {
-            c1: Point::new(700.0, 300.0),
-            c2: Point::new(700.0, 300.0),
-            c3: Point::new(700.0, 700.0),
-            c4: Point::new(700.0, 700.0),
-        },
-        CubicBezier {
-            c1: Point::new(700.0, 700.0),
-            c2: Point::new(700.0, 700.0),
-            c3: Point::new(300.0, 700.0),
-            c4: Point::new(300.0, 700.0),
-        },
-        CubicBezier {
-            c1: Point::new(300.0, 700.0),
-            c2: Point::new(300.0, 700.0),
-            c3: Point::new(300.0, 300.0),
-            c4: Point::new(300.0, 300.0),
-        },
-    ];
+    let origin = Point::new(0.0, 0.0);
+    let size = vek::Vec2::new(w as f32, h as f32);
+    let full_cover = shapes::rectangle(origin, size);
+
+    let top_left =  Point::new(0.400 * wf, 0.400 * hf);
+    let top_right = Point::new(x, y);
+    let btm_left =  Point::new(0.400 * wf, 0.650 * hf);
+    let btm_right = Point::new(0.600 * wf, 0.700 * hf);
 
     let texture = Texture::QuadBitmap {
-        top_left:  Point::new(0.400 * wf, 0.400 * hf),
-        top_right: Point::new(x, y),
-        btm_left:  Point::new(0.400 * wf, 0.650 * hf),
-        btm_right: Point::new(0.600 * wf, 0.600 * hf),
+        top_left,
+        top_right,
+        btm_left,
+        btm_right,
         bitmap: bitmap.unwrap(),
     };
 
-    wizdraw.fill_cbc(&oval, &Texture::Debug, false, SsaaConfig::None);
-    wizdraw.fill_cbc(&oval, &texture, false, SsaaConfig::X2);
+    let quad = shapes::quad(top_left, top_right, btm_left, btm_right);
+    wizdraw.clear();
+
+    wizdraw.fill_cbc(&quad, &Texture::Debug, SsaaConfig::None);
+    wizdraw.fill_cbc(&quad, &texture, SsaaConfig::None);
 
     let data = Clamped(wizdraw.pixels().as_slice());
     let image_data = ImageData::new_with_u8_clamped_array_and_sh(data, w, h)?;

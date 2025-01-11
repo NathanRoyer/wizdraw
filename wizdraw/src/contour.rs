@@ -70,6 +70,15 @@ impl CubicBezier {
 
         max_error
     }
+
+    fn segment(start: Point, end: Point) -> Self {
+        Self {
+            c1: start,
+            c2: start,
+            c3: end,
+            c4: end,
+        }
+    }
 }
 
 /// Creates a Contour composite bezier curve based on another one.
@@ -95,12 +104,12 @@ pub fn contour(shape: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>,
     }
 
     let closed = shape.first().unwrap().c1 == shape.last().unwrap().c4;
+    // index in output where the last curve lies
     let mut end_index = [0; 2];
 
     let normal_factor = width * 0.5;
 
     for side in 0..2 {
-
         // make room for end connectors
         output.push(Default::default());
 
@@ -110,7 +119,7 @@ pub fn contour(shape: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>,
             _ => unreachable!(),
         }.cloned().map(|c: CubicBezier| c.reversed(side == 1));
 
-        let mut prev_offset: Option<CubicBezier> = None;
+        let mut previous: Option<CubicBezier> = None;
         let mut curve_index = 0;
         let mut maybe_curve = get_curve(curve_index);
         let mut trial: f32 = 1.0;
@@ -118,27 +127,21 @@ pub fn contour(shape: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>,
         while let Some(rem_sc) = maybe_curve {
             let (trial_sc, future_sc) = rem_sc.split(trial);
 
-            let this_offset = trial_sc.offset(normal_factor);
-            let max_offset_error = trial_sc.max_offset_error(&this_offset, normal_factor, 8);
+            let shifted = trial_sc.offset(normal_factor);
+            let max_offset_error = trial_sc.max_offset_error(&shifted, normal_factor, 8);
 
             if max_offset_error <= max_error {
-                if let Some(prev_offset) = prev_offset {
-                    if prev_offset.c4 != this_offset.c1 {
-                        let ctrl_len = prev_offset.c4.distance(this_offset.c1) * 0.5;
-                        let ctrl_v1 = (prev_offset.c4 - prev_offset.c3).normalized() * ctrl_len;
-                        let ctrl_v2 = (this_offset.c1 - this_offset.c2).normalized() * ctrl_len;
-
-                        output.push(CubicBezier {
-                            c1: prev_offset.c4,
-                            c2: prev_offset.c4 + ctrl_v1,
-                            c3: this_offset.c1 + ctrl_v2,
-                            c4: this_offset.c1,
-                        });
+                // previous is some for all curves but the first
+                if let Some(previous) = previous {
+                    // does it end where we start?
+                    if previous.c4 != shifted.c1 {
+                        // insert a connector to bridge previous end and next start
+                        output.push(connector(previous, shifted));
                     }
                 }
 
-                output.push(this_offset);
-                prev_offset = Some(this_offset);
+                output.push(shifted);
+                previous = Some(shifted);
 
                 // did we complete this curve?
                 if trial == 1.0 {
@@ -154,30 +157,51 @@ pub fn contour(shape: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>,
             }
         }
 
+        if closed {
+            output.push(Default::default());
+        }
+
         end_index[side] = output.len() - 1;
     }
 
-    let ec_index = [0, end_index[0] + 1];
-    let this_index = ec_index.map(|i| i + 1);
-    let prev_index = match closed {
-        true => end_index,
-        false => [end_index[1], end_index[0]],
-    };
+    let [outer_end_i, inner_end_i] = end_index;
 
-    for side in 0..2 {
+    if closed {
+        let outer_start = output[1];
+        let outer_end = output[outer_end_i - 1];
+        output[0] = connector(outer_end, outer_start);
 
-        let this_offset = output[this_index[side]];
-        let prev_offset = output[prev_index[side]];
+        let i = outer_end_i + 1;
+        let inner_start = output[i + 1];
+        let inner_end = output[inner_end_i - 1];
+        output[i] = connector(inner_end, inner_start);
 
-        let ctrl_len = prev_offset.c4.distance(this_offset.c1) * 0.5;
-        let ctrl_v1 = (prev_offset.c4 - prev_offset.c3).normalized() * ctrl_len;
-        let ctrl_v2 = (this_offset.c1 - this_offset.c2).normalized() * ctrl_len;
+        output[outer_end_i] = CubicBezier::segment(outer_end.c4, inner_end.c4);
+        output[inner_end_i] = CubicBezier::segment(inner_end.c4, outer_end.c4);
+    } else {
+        let outer_start = output[1];
+        let outer_end = output[inner_end_i];
+        output[0] = connector(outer_end, outer_start);
 
-        output[ec_index[side]] = CubicBezier {
-            c1: prev_offset.c4,
-            c2: prev_offset.c4 + ctrl_v1,
-            c3: this_offset.c1 + ctrl_v2,
-            c4: this_offset.c1,
-        };
+        let i = outer_end_i + 1;
+        let inner_start = output[i + 1];
+        let inner_end = output[outer_end_i];
+        output[i] = connector(inner_end, inner_start);
+    }
+}
+
+#[inline(always)]
+fn connector(previous: CubicBezier, shifted: CubicBezier) -> CubicBezier {
+    let ctrl_len = previous.c4.distance(shifted.c1) * 0.5;
+    let ctrl_v1 = (previous.c4 - previous.c3).normalized() * ctrl_len;
+    let ctrl_v2 = (shifted.c1 - shifted.c2).normalized() * ctrl_len;
+
+    CubicBezier {
+        // extend Pc3 -> Pc4 towards Nc
+        // extend Nc2 -> Nc1 towards Pc
+        c1: previous.c4,
+        c2: previous.c4 + ctrl_v1,
+        c3: shifted.c1 + ctrl_v2,
+        c4: shifted.c1,
     }
 }
