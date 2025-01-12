@@ -1,15 +1,17 @@
 use super::*;
 use vek::num_traits::Euclid;
 
+const TRANSPARENT: Color16 = Color16::new(0, 0, 0, 0);
+
 impl Texture<'_> {
     #[inline(always)]
     pub(super) fn sample(
         &self,
         pixel: Point,
         bitmaps: &Bitmaps,
-    ) -> Color {
+    ) -> Color16 {
         match self {
-            Texture::SolidColor(color) => *color,
+            Texture::SolidColor(color) => Color16::from(*color),
             Texture::Gradient(_slice) => todo!(),
             Texture::Debug => rainbow(pixel),
             Texture::Bitmap {
@@ -43,30 +45,35 @@ impl Texture<'_> {
 }
 
 #[inline(always)]
-pub fn rainbow(point: Point) -> Color {
-    let point = point.map(|f| f as usize);
-    let i = ((point.x + point.y) % 128) >> 4;
+pub fn rainbow(point: Point) -> Color16 {
+    const RAINBOW: [Color16; 8] = [
+        Color16::new(255,   0,   0, 255),
+        Color16::new(255, 127,   0, 255),
+        Color16::new(255, 255,   0, 255),
+        Color16::new(  0, 255,   0, 255),
+        Color16::new(  0,   0, 255, 255),
+        Color16::new( 75,   0, 130, 255),
+        Color16::new(148,   0, 211, 255),
+        Color16::new(255, 255, 255, 100),
+    ];
 
-    [
-        Color::new(255,   0,   0, 255),
-        Color::new(255, 127,   0, 255),
-        Color::new(255, 255,   0, 255),
-        Color::new(  0, 255,   0, 255),
-        Color::new(  0,   0, 255, 255),
-        Color::new( 75,   0, 130, 255),
-        Color::new(148,   0, 211, 255),
-        Color::new(255, 255, 255, 100),
-    ][i]
+    let point = point.map(|f| f as usize);
+    let i = ((point.x + point.y) & 127) >> 4;
+
+    RAINBOW[i]
 }
 
 impl Bitmap {
     #[inline(always)]
-    fn sample(&self, texture_offset: Point) -> Color {
+    fn sample(&self, texture_offset: Point) -> Color16 {
         let x = texture_offset.x as usize;
         let y = texture_offset.y as usize;
         let i = y * self.size.x + x;
 
-        self.pixels.get(i).copied().unwrap_or(TRANSPARENT)
+        match self.pixels.get(i) {
+            Some(c) => Color16::from(*c),
+            None => TRANSPARENT,
+        }
     }
 
     #[inline(always)]
@@ -76,7 +83,7 @@ impl Bitmap {
         top_left: Point,
         scale: f32,
         repeat: bool,
-    ) -> Color {
+    ) -> Color16 {
         let float_size = self.size.map(|uint| uint as f32);
         let scaled_size = float_size * scale;
 
@@ -105,7 +112,7 @@ impl Bitmap {
         btm_left: Point,
         top_right: Point,
         btm_right: Point,
-    ) -> Option<Color> {
+    ) -> Option<Color16> {
         let quad = [
             top_left,
             top_right,

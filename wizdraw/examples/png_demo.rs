@@ -73,9 +73,9 @@ fn main() {
                     canvas.fill_cbc(&path, &texture, ssaa);
                     canvas.fill_cbc(&line, &contour, ssaa);
                 }
-                let avg_ms = then.elapsed().as_millis() / num;
-                let fps = 1000 / avg_ms;
-                println!("{:?}: {}ms = {} FPS", ssaa, avg_ms, fps);
+                let avg_ms = then.elapsed().as_micros() / num;
+                let fps = 1000000 / avg_ms;
+                println!("{:?}: {}us = {} FPS", ssaa, avg_ms, fps);
             }
         }
     }

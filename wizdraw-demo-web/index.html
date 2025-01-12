@@ -37,13 +37,23 @@ h3 {
             let x = 0.0;
             let y = 0.0;
 
+            let samples = [];
+
             function update_frame() {
                 if (running) {
                     let startTime = performance.now();
                     frame(x, y);
                     let endTime = performance.now();
-                    document.title = Math.round(1000 / (endTime - startTime)).toString() + ' FPS';
+                    let fps = 1000 / (endTime - startTime);
+                    samples.push(fps);
+
+                    if (samples.length >= 10) {
+                        let avg_fps = samples.reduce((a, b) => a + b) / samples.length;
+                        document.title = Math.round(avg_fps).toString() + ' FPS (MAX 60)';
+                        samples = [];
+                    }
                 }
+
                 setTimeout(update_frame, 16);
             }
 

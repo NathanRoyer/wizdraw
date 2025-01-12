@@ -1,3 +1,4 @@
+use rgb::ComponentMap;
 use super::*;
 
 use alloc::{vec, vec::Vec, boxed::Box};
@@ -12,9 +13,16 @@ mod tile;
 mod simd;
 
 type IntPoint = Vec2<i32>;
+const POINTS: usize = 64;
 const PX_WIDTH: i32 = 32;
-const TILE_SIDE: usize = 32;
-const POINTS: usize = 256;
+
+type MaskRow = u32;
+const TILE_W: usize = MaskRow::BITS as usize;
+const TILE_H: usize = 32;
+
+const DEBUG_NON_OVERLAPPING: bool = false;
+
+type Color16 = rgb::RGBA::<u16>;
 
 use tile::TileIterator;
 use bitmap::Bitmaps;
@@ -34,7 +42,7 @@ pub struct Canvas {
     size: Vec2<usize>,
 }
 
-type Mask = [[bool; TILE_SIDE]; TILE_SIDE];
+type Mask = [MaskRow; TILE_H];
 
 impl Canvas {
     /// Create a basic in-memory canvas
@@ -43,7 +51,7 @@ impl Canvas {
         Canvas {
             bitmaps: Bitmaps::new(),
             pixels: vec![Default::default(); sz].into(),
-            mask: vec![[false; TILE_SIDE]; TILE_SIDE].try_into().unwrap(),
+            mask: vec![0; TILE_H].try_into().unwrap(),
             size: Vec2::new(width, height),
         }
     }
@@ -109,11 +117,8 @@ impl super::Canvas for Canvas {
         texture: &Texture,
         ssaa: SsaaConfig,
     ) {
-        let boxes = path.iter().map(|c| c.aabb());
-
         for mut tile in self.tiles(ssaa) {
-
-            if boxes.clone().any(|b| tile.overlaps(b)) {
+            if path.iter().any(|c| c.overlaps(tile.aabb)) {
                 let mut last_end = path.last().map(|c| c.c4);
                 for curve in path {
                     assert_eq!(Some(curve.c1), last_end);
@@ -131,7 +136,7 @@ impl super::Canvas for Canvas {
                     &self.bitmaps,
                 );
 
-                self.mask.iter_mut().for_each(|row| row.fill(false));
+                self.mask.fill(0);
 
             } else if tile.sample_oob(path) {
 
@@ -171,14 +176,13 @@ fn fast_inv_sqrt(num: f32) -> f32 {
 }
 
 #[inline(always)]
-fn blend(src: Color, dst: Color) -> Color {
+fn blend(src: Color16, dst: Color) -> Color {
     match src.a {
-        255 => return src,
+        255 => return src.map(|c| c as u8),
         0 => return dst,
         _ => (),
     };
 
-    let src = rgb::RGBA::new(src.r as u16, src.g as u16, src.b as u16, src.a as u16);
     let dst = rgb::RGBA::new(dst.r as u16, dst.g as u16, dst.b as u16, dst.a as u16);
 
     let u8_max = u8::MAX as u16;

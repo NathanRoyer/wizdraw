@@ -54,12 +54,14 @@ pub fn frame(x: f32, y: f32) -> Result<(), JsValue> {
 
     let origin = Point::new(0.0, 0.0);
     let size = vek::Vec2::new(w as f32, h as f32);
-    let full_cover = shapes::rectangle(origin, size);
+    let _full_cover = shapes::rectangle(origin, size);
 
     let top_left =  Point::new(0.400 * wf, 0.400 * hf);
     let top_right = Point::new(x, y);
     let btm_left =  Point::new(0.400 * wf, 0.650 * hf);
-    let btm_right = Point::new(0.600 * wf, 0.700 * hf);
+    let btm_right = Point::new(x, 0.700 * hf);
+
+    let _purple = Texture::SolidColor(Color::new(127, 0, 200, 255));
 
     let texture = Texture::QuadBitmap {
         top_left,

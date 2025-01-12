@@ -2,7 +2,6 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(feature = "simd", feature(portable_simd))]
-#![cfg_attr(feature = "simd", feature(slice_flatten))]
 
 extern crate alloc;
 extern crate std;
@@ -84,7 +83,19 @@ pub type Color = rgb::RGBA<u8>;
 /// Pixel or Subpixel coordinates
 pub type Point = Vec2<f32>;
 
-type BoundingBox = Vec2<(f32, f32)>;
+#[derive(Copy, Clone)]
+struct BoundingBox {
+    min: Point,
+    max: Point,
+}
+
+impl BoundingBox {
+    fn overlaps_with(&self, other: BoundingBox) -> bool {
+        let x_overlap = (self.min.x <= other.max.x) & (self.max.x >= other.min.x);
+        let y_overlap = (self.min.y <= other.max.y) & (self.max.y >= other.min.y);
+        x_overlap & y_overlap
+    }
+}
 
 /// Cubic Bezier Curve, made of 4 control points
 #[derive(Copy, Clone, Debug, Default)]
@@ -154,7 +165,30 @@ impl CubicBezier {
     fn aabb(&self) -> BoundingBox {
         let (min_x, max_x) = min_max([self.c1.x, self.c2.x, self.c3.x, self.c4.x]);
         let (min_y, max_y) = min_max([self.c1.y, self.c2.y, self.c3.y, self.c4.y]);
-        BoundingBox::new((min_x, max_x), (min_y, max_y))
+        BoundingBox {
+            min: Point::new(min_x, min_y),
+            max: Point::new(max_x, max_y),
+        }
+    }
+
+    fn split_4(&self) -> [Self; 4] {
+        let (ab, cd) = self.split(0.5);
+        let (a, b) = ab.split(0.5);
+        let (c, d) = cd.split(0.5);
+        [a, b, c, d]
+    }
+
+    fn overlaps(&self, tile: BoundingBox) -> bool {
+        if self.aabb().overlaps_with(tile) {
+            let [a, b, c, d] = self.split_4();
+            let (aabb_1, aabb_2) = (a.aabb(), b.aabb());
+            let (aabb_3, aabb_4) = (c.aabb(), d.aabb());
+
+            aabb_1.overlaps_with(tile) || aabb_2.overlaps_with(tile) ||
+            aabb_3.overlaps_with(tile) || aabb_4.overlaps_with(tile)
+        } else {
+            false
+        }
     }
 }
 
