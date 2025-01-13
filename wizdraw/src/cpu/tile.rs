@@ -194,11 +194,13 @@ impl Tile {
             let end = self.workspace[p_i];
 
             for (y, row) in mask.iter_mut().enumerate() {
-                #[cfg(not(feature = "simd"))]
-                seq_process_row(y, &self.row_coords, start, end, row);
+                #[cfg(not(feature = "simd"))] {
+                    *row ^= seq_process_row(y, &self.row_coords, start, end)
+                }
 
-                #[cfg(feature = "simd")]
-                simd::process_row(y, &self.row_coords, start, end, row);
+                #[cfg(feature = "simd")] {
+                    *row ^= simd::process_row(y, &self.row_coords, start, end)
+                }
             }
 
             start = end;
@@ -215,18 +217,17 @@ fn seq_process_row(
     row_coords: &[IntPoint; TILE_W],
     start: IntPoint,
     end: IntPoint,
-    row: &mut MaskRow,
-) {
+) -> MaskRow {
     let row_offset = IntPoint::new(0, y as i32 * PX_WIDTH);
-    let mut toggles = 0;
+    let mut xor_mask = 0;
 
     for i in 0..TILE_W {
         let shifted = row_offset + row_coords[i];
         let inside = seq_toggle_in_shape(shifted, start, end);
-        toggles |= (inside as MaskRow) << i;
+        xor_mask |= (inside as MaskRow) << i;
     }
 
-    *row ^= toggles;
+    xor_mask
 }
 
 // Computes a one bit winding number increment/decrement

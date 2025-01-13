@@ -6,3 +6,7 @@ members = [ "wizdraw", "wizdraw-demo-web" ]
 #
 # [profile.release]
 # debug = true
+
+[profile.release]
+codegen-units = 1
+lto = "fat"

@@ -63,18 +63,20 @@ pub fn frame(x: f32, y: f32) -> Result<(), JsValue> {
 
     let _purple = Texture::SolidColor(Color::new(127, 0, 200, 255));
 
-    let texture = Texture::QuadBitmap {
+    let texture = Texture::Bitmap {
         top_left,
-        top_right,
-        btm_left,
-        btm_right,
+        // top_right,
+        // btm_left,
+        // btm_right,
+        scale: 1.0,
+        repeat: true,
         bitmap: bitmap.unwrap(),
     };
 
     let quad = shapes::quad(top_left, top_right, btm_left, btm_right);
     wizdraw.clear();
 
-    wizdraw.fill_cbc(&quad, &Texture::Debug, SsaaConfig::None);
+    // wizdraw.fill_cbc(&quad, &Texture::Debug, SsaaConfig::None);
     wizdraw.fill_cbc(&quad, &texture, SsaaConfig::None);
 
     let data = Clamped(wizdraw.pixels().as_slice());

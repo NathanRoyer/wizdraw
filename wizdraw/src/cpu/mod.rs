@@ -117,7 +117,17 @@ impl super::Canvas for Canvas {
         texture: &Texture,
         ssaa: SsaaConfig,
     ) {
+        let mut shape_aabb = BoundingBox::default();
+
+        for curve in path {
+            shape_aabb = shape_aabb.union(curve.aabb());
+        }
+
         for mut tile in self.tiles(ssaa) {
+            if !shape_aabb.overlaps_with(tile.aabb) {
+                continue;
+            }
+
             if path.iter().any(|c| c.overlaps(tile.aabb)) {
                 let mut last_end = path.last().map(|c| c.c4);
                 for curve in path {

@@ -43,7 +43,7 @@ fn simd_toggle_in_shape(
     let dec_mask = ( cond_a) & ( cond_b) & ( cond_c);
     let inc_mask = (!cond_a) & (!cond_b) & (!cond_c);
 
-    (dec_mask ^ inc_mask).to_bitmask() as _
+    (dec_mask ^ inc_mask).to_bitmask() as MaskRow
 }
 
 #[inline(always)]
@@ -52,18 +52,20 @@ pub(super) fn process_row(
     simd_coords: &[SimdPoint; S_TILE_W],
     start: IntPoint,
     end: IntPoint,
-    row: &mut MaskRow,
-) {
+) -> MaskRow {
     let row_offset = IntPoint::new(0, y as i32 * PX_WIDTH);
     let row_offset = simd_point(row_offset);
     let start = simd_point(start);
     let end = simd_point(end);
+    let mut xor_mask = 0;
 
-    for (i, point) in simd_coords.iter().enumerate() {
-        let shifted = point + row_offset;
+    for i in 0..S_TILE_W {
+        let shifted = simd_coords[i] + row_offset;
         let toggles = simd_toggle_in_shape(shifted, start, end);
-        *row ^= toggles << (LANES * i);
+        xor_mask ^= toggles << (LANES * i);
     }
+
+    xor_mask
 }
 
 #[inline(always)]

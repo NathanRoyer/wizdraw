@@ -60,6 +60,7 @@ impl BitmapHandle {
 #[derive(Copy, Clone, Debug)]
 pub enum Texture<'a> {
     SolidColor(Color),
+    /// Not supported yet
     Gradient(&'a [(Point, Color)]),
     Bitmap {
         top_left: Point,
@@ -89,11 +90,32 @@ struct BoundingBox {
     max: Point,
 }
 
+impl Default for BoundingBox {
+    fn default() -> Self {
+        Self {
+            min: Point::new(f32::INFINITY, f32::INFINITY),
+            max: Point::new(f32::NEG_INFINITY, f32::NEG_INFINITY),
+        }
+    }
+}
+
 impl BoundingBox {
     fn overlaps_with(&self, other: BoundingBox) -> bool {
         let x_overlap = (self.min.x <= other.max.x) & (self.max.x >= other.min.x);
         let y_overlap = (self.min.y <= other.max.y) & (self.max.y >= other.min.y);
         x_overlap & y_overlap
+    }
+
+    fn union(&self, other: BoundingBox) -> Self {
+        let min_x = self.min.x.min(other.min.x);
+        let min_y = self.min.y.min(other.min.y);
+        let max_x = self.max.x.max(other.max.x);
+        let max_y = self.max.y.max(other.max.y);
+
+        Self {
+            min: Point::new(min_x, min_y),
+            max: Point::new(max_x, max_y),
+        }
     }
 }
 
