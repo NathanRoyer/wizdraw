@@ -1,124 +1,264 @@
 pub use super::*;
-use core::slice::from_raw_parts;
+use core::array::from_fn;
+use core::mem::swap;
 
-mod drm_kms;
+use glow::{Context, HasContext, PixelUnpackData, PixelPackData, Renderbuffer};
+use glow::{NativeShader, NativeTexture, NativeProgram, Framebuffer};
 
-pub enum Primitive {
-    Rectangle {
-        top_left: Point,
-        size: Vec2<f32>,
-    },
-    Quad([Point; 4]),
+use glow::{
+    VERTEX_SHADER, FRAGMENT_SHADER, TEXTURE_2D, TEXTURE_MAG_FILTER, TEXTURE_MIN_FILTER,
+    NEAREST, RGB, UNSIGNED_SHORT_5_6_5, FRAMEBUFFER, BLEND, SRC_ALPHA, ONE_MINUS_SRC_ALPHA,
+    DEPTH_TEST, FLOAT, ARRAY_BUFFER, DYNAMIC_DRAW, RENDERBUFFER, RGB565, COLOR_ATTACHMENT0,
+    FRAMEBUFFER_COMPLETE, COLOR_BUFFER_BIT, TRIANGLE_STRIP, LINK_STATUS,
+};
+
+// todo
+// mod drm_kms;
+
+
+pub struct Es2Canvas {
+    gl: Context,
+    mask_program: NativeProgram,
+    color_program: NativeProgram,
+    mask_src: NativeTexture,
+    mask_dst: NativeTexture,
+    // render_buffer: Renderbuffer,
+    mask_fb: Framebuffer,
+    fb_size: Vec2<i32>,
 }
 
-pub enum OpenGlVersion {
-    Es2x,
-    Es3x,
+unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<NativeShader, String> {
+    let shader = gl.create_shader(shader_type)?;
+    gl.shader_source(shader, src);
+    gl.compile_shader(shader);
+    if gl.get_shader_compile_status(shader) {
+        Ok(shader)
+    } else {
+        let errors = gl.get_shader_info_log(shader);
+        Err(format!("Compilation Failed: {}", errors))
+    }
 }
 
-/// This only uses the default framebuffer, which must have depth attachment
-pub trait OpenGlContext {
-    type Program;
-    type Buffer;
+unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
+    let tex = gl.create_texture()?;
+    gl.bind_texture(TEXTURE_2D, Some(tex));
+    gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MIN_FILTER, NEAREST as i32);
+    gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MAG_FILTER, NEAREST as i32);
 
-    fn version(&self) -> OpenGlVersion;
-    fn get_viewport_size(&self) -> Vec2<usize>;
+    let side = 256;
+    let level = 0;
+    let format = RGB;
+    let border = 0;
+    let tex_type = UNSIGNED_SHORT_5_6_5;
+    let data = PixelUnpackData::Slice(None);
 
-    fn create_program(&mut self, vertex_shader: &str, fragment_shader: &str) -> Self::Program;
-    fn delete_program(&mut self, program: Self::Program);
+    gl.tex_image_2d(
+        TEXTURE_2D,
+        level,
+        format as i32,
+        side,
+        side,
+        border,
+        format,
+        tex_type,
+        data,
+    );
 
-    fn create_uniform_buffer(&mut self, capacity: usize) -> Self::Buffer;
-    fn fill_uniform_buffer(&mut self, buffer: &Self::Buffer, values: &[f32]);
-    fn delete_uniform_buffer(&mut self, buffer: Self::Buffer);
-
-    fn set_buffer_uniform(&mut self, program: &Self::Program, name: &str, buffer: &Self::Buffer);
-    fn set_uint_uniform(&mut self, program: &Self::Program, name: &str, value: u32);
-    fn set_float_uniform(&mut self, program: &Self::Program, name: &str, value: f32);
-
-    fn clear(&mut self, color: bool, depth: bool);
-    fn draw(&mut self, program: &Self::Program, primitive: Primitive, mask_colors: bool);
-    fn swap_buffers(&mut self);
+    Ok(tex)
 }
 
-pub struct OpenGlCanvas<C: OpenGlContext> {
-    ctx: C,
-    fb_size: Vec2<usize>,
-    program: C::Program,
-    curves: C::Buffer,
+unsafe fn init_program(gl: &Context, v_shader: &str, f_shader: &str) -> Result<NativeProgram, String> {
+    let program = gl.create_program()?;
+    let vertex_shader = init_shader(&gl, VERTEX_SHADER, v_shader)?;
+    let fragment_shader = init_shader(&gl, FRAGMENT_SHADER, f_shader)?;
+    gl.attach_shader(program, vertex_shader);
+    gl.attach_shader(program, fragment_shader);
+
+    gl.link_program(program);
+    gl.validate_program(program);
+    let warning = gl.get_program_info_log(program);
+    if !warning.is_empty() {
+        return Err(format!("Compilation Warning: {}", warning));
+    }
+
+    if gl.get_program_parameter_i32(program, LINK_STATUS) == 0 {
+        gl.delete_program(program);
+        return Err(format!("Linkage Error"));
+    }
+
+    Ok(program)
 }
 
-impl<C: OpenGlContext> OpenGlCanvas<C> {
-    pub fn new(mut gl_ctx: C) -> Self {
-        let fb_size = gl_ctx.get_viewport_size();
+impl Es2Canvas {
+    pub fn init(gl: Context, width: i32, height: i32) -> Result<Self, String> {
+        let fb_size = Vec2::new(width, height);
 
-        let (vs, fs) = match gl_ctx.version() {
-            OpenGlVersion::Es2x => (include_str!("glsl/v-es2.glsl"), include_str!("glsl/f-es2.glsl")),
-            OpenGlVersion::Es3x => (include_str!("glsl/v-es3.glsl"), include_str!("glsl/f-es3.glsl")),
-        };
+        unsafe {
+            let v_shader = include_str!("mask-vertex-shader.glsl");
+            let f_shader = include_str!("mask-fragment-shader.glsl");
+            let mask_program = init_program(&gl, v_shader, f_shader)?;
 
-        let program = gl_ctx.create_program(vs, fs);
-        let curves = gl_ctx.create_uniform_buffer(64);
+            let v_shader = include_str!("color-vertex-shader.glsl");
+            let f_shader = include_str!("color-fragment-shader.glsl");
+            let color_program = init_program(&gl, v_shader, f_shader)?;
 
-        gl_ctx.set_buffer_uniform(&program, "path", &curves);
-        gl_ctx.set_float_uniform(&program, "straight_threshold", 0.5);
-        gl_ctx.set_float_uniform(&program, "aabb_safe_margin", 1.0);
+            let Some(mask_attr) = gl.get_attrib_location(mask_program, "a_position") else {
+                return Err("Failed to locate a_position attribute".into());
+            };
 
-        Self {
-            fb_size,
-            ctx: gl_ctx,
-            program,
-            curves,
+            let Some(color_attr) = gl.get_attrib_location(color_program, "a_position") else {
+                return Err("Failed to locate a_position attribute".into());
+            };
+
+            let position_buffer = gl.create_buffer()?;
+            gl.bind_buffer(ARRAY_BUFFER, Some(position_buffer));
+            gl.enable_vertex_attrib_array(mask_attr);
+            gl.enable_vertex_attrib_array(color_attr);
+
+            let (normalize, stride, offset) = (false, 0, 0);
+            gl.vertex_attrib_pointer_f32(mask_attr, 2, FLOAT, normalize, stride, offset);
+            gl.vertex_attrib_pointer_f32(color_attr, 2, FLOAT, normalize, stride, offset);
+
+            // a square covering full viewport
+            let pos: [f32; 8] = [ -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0 ];
+            let pos_u8: [u8; 8 * 4] = from_fn(|i| pos[i / 4].to_ne_bytes()[i % 4]);
+            gl.buffer_data_u8_slice(ARRAY_BUFFER, &pos_u8, DYNAMIC_DRAW);
+
+            let mask_src = init_texture(&gl)?;
+            let mask_dst = init_texture(&gl)?;
+
+            let mask_fb = gl.create_framebuffer()?;
+            gl.bind_framebuffer(FRAMEBUFFER, Some(mask_fb));
+
+            gl.enable(BLEND);
+            gl.blend_func(SRC_ALPHA, ONE_MINUS_SRC_ALPHA);
+
+            gl.disable(DEPTH_TEST);
+            gl.depth_mask(false);
+
+            let render_buffer = gl.create_renderbuffer()?;
+            gl.bind_renderbuffer(RENDERBUFFER, Some(render_buffer));
+            gl.renderbuffer_storage(RENDERBUFFER, RGB565, fb_size.x, fb_size.y);
+            gl.framebuffer_renderbuffer(FRAMEBUFFER, COLOR_ATTACHMENT0, RENDERBUFFER, Some(render_buffer));
+
+            let status = gl.check_framebuffer_status(FRAMEBUFFER);
+            if status != FRAMEBUFFER_COMPLETE {
+                return Err(format!("Failed to create render buffer: status = {status}"));
+            }
+
+            // todo: check actual renderbuffer format
+            // todo: maybe try OES_rgb8_rgba8 extension
+
+            Ok(Self {
+                gl,
+                mask_program,
+                color_program,
+                mask_src,
+                mask_dst,
+                // render_buffer,
+                mask_fb,
+                fb_size,
+            })
         }
     }
 
-    pub fn swap_buffers(&mut self) {
-        self.ctx.swap_buffers();
+    fn tile_pass(&mut self, cbc: &[CubicBezier], x: i32, y: i32) {
+        unsafe {
+            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.mask_fb));
+            self.gl.use_program(Some(self.mask_program));
+
+            let init_loc = self.gl.get_uniform_location(self.mask_program, "init");
+            self.gl.uniform_1_i32(init_loc.as_ref(), 1);
+
+            let loc = self.gl.get_uniform_location(self.mask_program, "height");
+            self.gl.uniform_1_i32(loc.as_ref(), self.fb_size.y);
+
+            let loc = self.gl.get_uniform_location(self.mask_program, "offset");
+            self.gl.uniform_2_i32(loc.as_ref(), x, y);
+
+            self.gl.viewport(0, 0, 256, 256);
+
+            for (i, curve) in cbc.iter().enumerate() {
+                let coords = [
+                    curve.c1.x, curve.c1.y,
+                    curve.c2.x, curve.c2.y,
+                    curve.c3.x, curve.c3.y,
+                    curve.c4.x, curve.c4.y,
+                ];
+
+                let loc = self.gl.get_uniform_location(self.mask_program, "input_curve");
+                self.gl.uniform_2_f32_slice(loc.as_ref(), &coords);
+
+                self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
+                self.gl.framebuffer_texture_2d(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, Some(self.mask_dst), 0);
+
+                // use the square from Self::init()
+                let (offset, count) = (0, 4);
+                self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
+
+                swap(&mut self.mask_src, &mut self.mask_dst);
+
+                if i == 0 {
+                    self.gl.uniform_1_i32(init_loc.as_ref(), 0);
+                }
+            }
+        }
+
+        // color pass
+        unsafe {
+            self.gl.use_program(Some(self.color_program));
+
+            let loc = self.gl.get_uniform_location(self.color_program, "height");
+            self.gl.uniform_1_i32(loc.as_ref(), self.fb_size.y);
+
+            let loc = self.gl.get_uniform_location(self.color_program, "offset");
+            self.gl.uniform_2_i32(loc.as_ref(), x, y);
+
+            self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
+            self.gl.bind_framebuffer(FRAMEBUFFER, None);
+
+            self.gl.viewport(x, y, 256, 256);
+
+            // use the square from Self::init()
+            let (offset, count) = (0, 4);
+            self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
+        }
+    }
+
+    pub fn read_rgb565(&self, pixels: &mut [u8]) {
+        unsafe {
+            let data = PixelPackData::Slice(Some(pixels));
+            self.gl.read_pixels(0, 0, self.fb_size.x, self.fb_size.y, RGB, RGB565, data);
+        }
     }
 }
 
-impl<C: OpenGlContext> Canvas for OpenGlCanvas<C> {
-    type BitmapHandle = usize;
-
+impl Canvas for Es2Canvas {
     fn framebuffer_size(&self) -> Vec2<usize> {
-        self.fb_size
+        self.fb_size.map(|n| n as _)
     }
 
-    fn alloc_bitmap(&mut self, _width: usize, _height: usize) -> Self::BitmapHandle {
-        0
-    }
-
-    fn fill_bitmap(&mut self, _bitmap: Self::BitmapHandle, _x: usize, _y: usize, _w: usize, _h: usize, _buf: &[Color]) {
-        // todo
-    }
-
-    fn free_bitmap(&mut self, _bitmap: Self::BitmapHandle) {
-        // todo
-    }
+    fn alloc_bitmap(&mut self, _width: usize, _height: usize) -> BitmapHandle { BitmapHandle(0) }
+    fn fill_bitmap(&mut self, _bitmap: BitmapHandle, _x: usize, _y: usize, _w: usize, _h: usize, _buf: &[Color]) { }
+    fn free_bitmap(&mut self, _bitmap: BitmapHandle) { }
 
     fn clear(&mut self) {
-        self.ctx.clear(true, true);
+        unsafe {
+            self.gl.bind_framebuffer(FRAMEBUFFER, None);
+            self.gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            self.gl.clear(COLOR_BUFFER_BIT);
+        }
     }
 
-    fn fill_cbc(&mut self, cbc: &[CubicBezier], _texture: &Texture<Self::BitmapHandle>, holes: bool) {
-        let cbc_len = cbc.len();
-        if cbc_len > 64 {
-            panic!("cbc too long! (todo)");
+    fn fill_cbc(&mut self, cbc: &[CubicBezier], _texture: &Texture, _ssaa: SsaaConfig) {
+        let mut y = 0;
+        while y < self.fb_size.y {
+            let mut x = 0;
+            while x < self.fb_size.x {
+                self.tile_pass(cbc, x, y);
+                x += 256;
+            }
+            y += 256;
         }
-
-        let cbc = unsafe {
-            let f32_ptr = cbc.as_ptr() as *const f32;
-            from_raw_parts(f32_ptr, cbc_len * 8)
-        };
-
-        self.ctx.fill_uniform_buffer(&self.curves, cbc);
-        self.ctx.set_uint_uniform(&self.program, "show_holes", holes as u32);
-        self.ctx.set_uint_uniform(&self.program, "path_len", cbc_len as u32);
-
-        let primitive = Primitive::Rectangle {
-            top_left: Point::new(0.0, 0.0),
-            size: self.fb_size.map(|c| c as f32),
-        };
-
-        self.ctx.draw(&self.program, primitive, false);
     }
 }

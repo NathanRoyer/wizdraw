@@ -11,10 +11,12 @@ categories = [ "rendering", "no-std" ]
 
 [dependencies]
 vek = { version = "0.17", default-features = false, features = ["libm"] }
+glow = { version = "0.16", optional = true }
 rgb = { version = "0.8" }
 
 [features]
 default = [ "contour", "shapes" ]
+gles2 = [ "dep:glow", "std" ]
 contour = []
 shapes = []
 simd = []
@@ -22,3 +24,4 @@ std = []
 
 [dev-dependencies]
 png = "0.17"
+sdl2 = "0.37"
