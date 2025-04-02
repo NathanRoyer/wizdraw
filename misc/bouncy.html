@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Wizdraw WebGL</title>
+        <style type="text/css">
+html, body {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    left: 0;
+    top: 0;
+    overflow: hidden;
+    background-color: #acc;
+}
+
+canvas {
+    position: absolute;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+}
+
+h3 {
+    position: absolute;
+    top: 0; left: 0;
+    z-index: 1;
+    margin: 1em;
+}
+        </style>
+    </head>
+    <body>
+        <h3 id="fps-log">hey</h3>
+        <canvas id="fb-canvas"></canvas>
+        <script type="text/javascript">
+let gl, opacityProgram, opacity_fb, colorProgram, positionBuffer;
+
+let dst_texture, src_texture;
+
+let opacity_v = `#version 100
+precision highp float;
+attribute vec4 a_position;
+void main() {
+    gl_Position = a_position;
+}
+`;
+ 
+let opacity_f = `#version 100
+precision highp float;
+const float TEXTURE_SIZE = 256.0;
+const float epsilon = 0.0001;
+const float straight_threshold = 0.8;
+
+uniform sampler2D prev_iteration;
+uniform float height;
+uniform vec2 offset;
+uniform int init;
+
+// [c1x, c1y, c2x, c2y, c3x, c3y, c4x, c4y]
+uniform float input_curve[8];
+
+bool use_segment_for_pip(vec2 p, vec2 s, vec2 e) {
+    vec2 v1 = p - s;
+    vec2 v2 = e - s;
+    float d = v1.x * v2.y - v1.y * v2.x;
+
+    bool b1 = s.y <= p.y;
+    bool b2 = e.y > p.y;
+    bool b3 = d > epsilon;
+
+    bool dec = ( b1) && ( b2) && ( b3);
+    bool inc = (!b1) && (!b2) && (!b3);
+
+    return (int(inc) - int(dec)) != 0;
+}
+
+bool is_curve_straight(vec2 curve[4]) {
+    // https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points
+
+    vec2 c1_to_c4 = curve[3] - curve[0];
+    float dot_c1_to_c4 = inversesqrt(c1_to_c4.x * c1_to_c4.x + c1_to_c4.y * c1_to_c4.y);
+
+    vec2 c2_to_c1 = curve[0] - curve[1];
+    float a_c2 = c1_to_c4.x * c2_to_c1.y;
+    float b_c2 = c1_to_c4.y * c2_to_c1.x;
+    float d_c2 = abs(a_c2 - b_c2) * dot_c1_to_c4;
+
+    vec2 c3_to_c1 = curve[0] - curve[2];
+    float a_c3 = c1_to_c4.x * c3_to_c1.y;
+    float b_c3 = c1_to_c4.y * c3_to_c1.x;
+    float d_c3 = abs(a_c3 - b_c3) * dot_c1_to_c4;
+
+    // distance from point to projected point
+    bool c2_close_enough = d_c2 < straight_threshold;
+    bool c3_close_enough = d_c3 < straight_threshold;
+
+    return c2_close_enough && c3_close_enough;
+}
+
+vec2 travel(vec2 src, vec2 dst, float t) {
+    return src + (dst - src) * t;
+}
+
+void split_curve(in vec2 curve[4], in float t, out vec2 trial_sc[4], out vec2 future_sc[4]) {
+    vec2 side1 = travel(curve[0], curve[1], t);
+    vec2 side2 = travel(curve[1], curve[2], t);
+    vec2 side3 = travel(curve[2], curve[3], t);
+
+    vec2 diag1 = travel(side1, side2, t);
+    vec2 diag2 = travel(side2, side3, t);
+
+    vec2 split_point = travel(diag1, diag2, t);
+
+    trial_sc[0] = curve[0];
+    trial_sc[1] = side1;
+    trial_sc[2] = diag1;
+    trial_sc[3] = split_point;
+
+    future_sc[0] = split_point;
+    future_sc[1] = diag2;
+    future_sc[2] = side3;
+    future_sc[3] = curve[3];
+}
+
+bool aabb_overlap(vec2 pos, vec2 curve[4]) {
+    vec2 min_c12 = min(curve[0], curve[1]);
+    vec2 max_c12 = max(curve[0], curve[1]);
+    vec2 min_c34 = min(curve[2], curve[3]);
+    vec2 max_c34 = max(curve[2], curve[3]);
+
+    vec2 min = min(min_c12, min_c34);
+    vec2 max = max(max_c12, max_c34);
+
+    bool x_overlap = min.x <= pos.x && pos.x <= max.x;
+    bool y_overlap = min.y <= pos.y && pos.y <= max.y;
+
+    return x_overlap && y_overlap;
+}
+
+void main() {
+    vec2 win_pos = gl_FragCoord.xy;
+    vec2 tex_pos = win_pos / TEXTURE_SIZE;
+    vec4 rgba = vec4(0);
+
+    if (init == 0) rgba = texture2D(prev_iteration, tex_pos);
+
+    // one bit winding number init
+    bool wind_num = rgba.x != 0.0;
+
+    win_pos.y += offset.y;
+    win_pos.x += offset.x;
+
+    // texture vertical flip
+    win_pos.y = height - win_pos.y;
+
+    vec2 curve[4];
+    vec2 future_sc[4];
+    vec2 trial_sc[4];
+
+    curve[0] = vec2(input_curve[0], input_curve[1]);
+    curve[1] = vec2(input_curve[2], input_curve[3]);
+    curve[2] = vec2(input_curve[4], input_curve[5]);
+    curve[3] = vec2(input_curve[6], input_curve[7]);
+
+    float trial = 1.0;
+
+    for (int i = 0; i < 1024; i++) {
+        split_curve(curve, trial, trial_sc, future_sc);
+        bool no_overlap = !aabb_overlap(win_pos, trial_sc);
+        bool use_as_is = no_overlap || is_curve_straight(trial_sc);
+
+        if (use_as_is) {
+            vec2 c1 = trial_sc[0];
+            vec2 c4 = trial_sc[3];
+            if (use_segment_for_pip(win_pos, c1, c4)) {
+                wind_num = !wind_num;
+            }
+
+            // did we complete this curve?
+            if (trial == 1.0) {
+                break;
+            }
+
+            curve[0] = future_sc[0];
+            curve[1] = future_sc[1];
+            curve[2] = future_sc[2];
+            curve[3] = future_sc[3];
+            trial = 1.0;
+        } else {
+            trial *= 0.5;
+        }
+    }
+
+    float r = wind_num ? 1.0 : 0.0;
+    gl_FragColor = vec4(r, 0.5, 0.5, 1);
+}
+
+`;
+
+let color_v = `#version 100
+precision highp float;
+attribute vec4 a_position;
+void main() {
+    gl_Position = a_position;
+}
+`;
+ 
+let color_f = `#version 100
+precision highp float;
+
+uniform vec2 offset;
+uniform float height;
+uniform sampler2D opacity;
+
+void main() {
+    vec2 inverted = vec2(gl_FragCoord.x, gl_FragCoord.y);
+    vec2 pos = (inverted - offset) / vec2(256.0, 256.0);
+
+    vec4 rgba = vec4(0);
+    if (pos.x > 0.0 && pos.y > 0.0 && pos.x < 1.0 && pos.y < 1.0) {
+        rgba = texture2D(opacity, pos);
+    }
+
+    if (rgba.x == 1.0) {
+        // it's in
+        gl_FragColor = vec4(pos, 0.5, 1);
+    } else {
+        // it's out
+        discard;
+        // gl_FragColor = vec4(0);
+    }
+}
+`;
+
+function refreshCanvasSize() {
+    gl.canvas.width = window.innerWidth;
+    gl.canvas.height = window.innerHeight;
+}
+
+function set_uniform(program, prop_type, name, ...args) {
+    let loc = gl.getUniformLocation(program, name);
+    args.unshift(loc);
+
+    let setter = gl['uniform' + prop_type];
+    setter.apply(gl, args);
+}
+
+function createShader(type, source) {
+    let shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    let warning = gl.getShaderInfoLog(shader);
+    if (warning) console.warn(warning);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        gl.deleteShader(shader);
+        panic('WebGL Shader Creation Error');
+    }
+
+    return shader;
+}
+
+function createProgram(vertexShader, fragmentShader) {
+    let program = gl.createProgram();
+
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    gl.validateProgram(program);
+    let warning = gl.getProgramInfoLog(program);
+    if (warning) console.warn(warning);
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        gl.deleteProgram(program);
+        panic('WebGL Program Creation Error');
+    }
+
+    return program;
+}
+
+function init_full_draw() {
+    let p1 = { x: -1.0, y: -1.0 };
+    let p2 = { x: 1.0, y: 1.0 };
+
+    let positions = new Float32Array([
+        p1.x, p1.y,
+        p1.x, p2.y,
+        p2.x, p1.y,
+        p2.x, p2.y,
+    ]);
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+}
+
+function draw_full_viewport() {
+    let offset = 0, count = 4;
+    gl.drawArrays(gl.TRIANGLE_STRIP, offset, count);
+}
+
+let frames = 0;
+
+function curve_pass(curve) {
+    if (curve.length != 8) {
+        return console.error("Invalid curve length");
+    }
+
+    set_uniform(opacityProgram, '1fv', 'input_curve', curve);
+
+    gl.bindTexture(gl.TEXTURE_2D, src_texture);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst_texture, 0);
+
+    draw_full_viewport();
+    
+    // swap src/dst textures
+    let tmp = src_texture;
+    src_texture = dst_texture;
+    dst_texture = tmp;
+}
+
+function color_pass(offset_x, offset_y) {
+    gl.useProgram(colorProgram);
+
+    set_uniform(colorProgram, '1f', 'height', window.innerHeight);
+    set_uniform(colorProgram, '2f', 'offset', offset_x, offset_y);
+
+    gl.bindTexture(gl.TEXTURE_2D, src_texture);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    gl.viewport(offset_x, offset_y, 256, 256);
+
+    draw_full_viewport();
+}
+
+let mx = 350.0, my = 350.0;
+
+function on_mouse_move(e) {
+    mx = e.clientX;
+    my = e.clientY;
+}
+
+function render_tile(offset_x, offset_y, j) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, opacity_fb);
+    gl.useProgram(opacityProgram);
+
+    set_uniform(opacityProgram, '1i', 'init', 1);
+    set_uniform(opacityProgram, '1f', 'height', window.innerHeight);
+    set_uniform(opacityProgram, '2f', 'offset', offset_x, offset_y);
+
+    gl.viewport(0, 0, 256, 256);
+
+    let curves = [
+        [100.0, 100.0, 100.0, 100.0, 400.0, 100.0, 400.0, 100.0],
+        [400.0, 100.0, 600.0, 100.0, mx, my, mx, my],
+        [mx, my, mx, my, 100.0, 600.0, 100.0, 400.0],
+        [100.0, 400.0, 100.0, 400.0, 100.0, 100.0, 100.0, 100.0],
+    ];
+
+    for (let i = 0; i < curves.length; i++) {
+        curve_pass(curves[i].map(c => c + 200 * j));
+
+        if (i == 0) set_uniform(opacityProgram, '1i', 'init', 0);
+    }
+
+    color_pass(offset_x, offset_y);
+}
+
+function loop() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    for (let j = 0; j < 10; j++) {
+        for (let y = 0; y < window.innerHeight; y += 256) {
+            for (let x = 0; x < window.innerWidth; x += 256) {
+                render_tile(x, y, j);
+            }
+        }
+    }
+
+    frames++;
+    my += 1;
+    setTimeout(loop, 16);
+}
+
+function initCanvas() {
+    setInterval(logFps, 100);
+    refreshCanvasSize();
+
+    opacityProgram = createProgram(
+        createShader(gl.VERTEX_SHADER, opacity_v),
+        createShader(gl.FRAGMENT_SHADER, opacity_f),
+    );
+
+    src_texture = createTexture();
+    dst_texture = createTexture();
+    opacity_fb = createTextureFramebuffer();
+
+    colorProgram = createProgram(
+        createShader(gl.VERTEX_SHADER, color_v),
+        createShader(gl.FRAGMENT_SHADER, color_f),
+    );
+
+    gl.useProgram(opacityProgram);
+
+    let opacity_pos_attr_loc = gl.getAttribLocation(opacityProgram, "a_position");
+    let color_pos_attr_loc = gl.getAttribLocation(colorProgram, "a_position");
+
+    positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.enableVertexAttribArray(opacity_pos_attr_loc);
+    gl.enableVertexAttribArray(color_pos_attr_loc);
+
+    let struct = 2, type = gl.FLOAT, normalize = false, stride = 0, offset = 0;
+    gl.vertexAttribPointer(opacity_pos_attr_loc, struct, type, normalize, stride, offset);
+    gl.vertexAttribPointer(color_pos_attr_loc, struct, type, normalize, stride, offset);
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+
+    window.addEventListener("resize", refreshCanvasSize);
+
+    init_full_draw();
+    loop();
+}
+
+function onLoad() {
+    let canvas = document.getElementById('fb-canvas');
+    gl = canvas.getContext('webgl');
+
+    if (!gl) {
+        alert("Your browser doesn't support WebGL; this application cannot run.");
+    }
+
+    document.body.addEventListener('mousemove', on_mouse_move);
+
+    initCanvas();
+}
+
+function createTexture() {
+    const width = 256;
+    const height = 256;
+    const targetTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+    const level = 0;
+    const internalFormat = gl.RGB;
+    const border = 0;
+    const format = internalFormat;
+    const type = gl.UNSIGNED_SHORT_5_6_5;
+    const data = null;
+    gl.texImage2D(
+        gl.TEXTURE_2D,
+        level,
+        internalFormat,
+        width,
+        height,
+        border,
+        format,
+        type,
+        data,
+    );
+
+    return targetTexture;
+}
+
+function createTextureFramebuffer() {
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    return fb;
+}
+
+function logFps() {
+    document.getElementById('fps-log').innerText = (frames * 10).toString() + " FPS";
+    frames = 0;
+}
+
+function panic(msg) {
+    alert(msg);
+    throw msg;
+}
+
+addEventListener("load", onLoad);
+        </script>
+    </body>
+</html>

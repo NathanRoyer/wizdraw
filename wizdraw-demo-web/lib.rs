@@ -76,7 +76,7 @@ pub fn frame(x: f32, y: f32) -> Result<(), JsValue> {
     let quad = shapes::quad(top_left, top_right, btm_left, btm_right);
     wizdraw.clear();
 
-    // wizdraw.fill_cbc(&quad, &Texture::Debug, SsaaConfig::None);
+    wizdraw.fill_cbc(&quad, &Texture::Debug, SsaaConfig::None);
     wizdraw.fill_cbc(&quad, &texture, SsaaConfig::None);
 
     let data = Clamped(wizdraw.pixels().as_slice());

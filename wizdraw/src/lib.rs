@@ -4,9 +4,11 @@
 #![cfg_attr(feature = "simd", feature(portable_simd))]
 
 extern crate alloc;
-extern crate std;
 pub extern crate rgb;
 pub extern crate vek;
+
+#[cfg(feature = "std")]
+extern crate std;
 
 use vek::vec::Vec2;
 
@@ -25,8 +27,9 @@ pub mod shapes;
 /// Implementations of [`Canvas`] using only the CPU
 pub mod cpu;
 
-// todo
-// pub mod opengl;
+/// Implementations of [`Canvas`] using OpenGL ES 2.0
+#[cfg(feature = "gles2")]
+pub mod gles2;
 
 // const AABB_SAFE_MARGIN: f32 = 1.0;
 
@@ -307,6 +310,7 @@ impl SsaaConfig {
 
 // looks dumb but improves performance
 // because the operand is a const
+#[doc(hidden)]
 #[macro_export]
 macro_rules! const_ssaa {
     ($ssaa:expr, $a:expr, $op:tt) => {
