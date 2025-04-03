@@ -22,7 +22,7 @@ pub struct Es2Canvas {
     color_program: NativeProgram,
     mask_src: NativeTexture,
     mask_dst: NativeTexture,
-    // render_buffer: Renderbuffer,
+    render_fb: Framebuffer,
     mask_fb: Framebuffer,
     fb_size: Vec2<i32>,
 }
@@ -126,9 +126,7 @@ impl Es2Canvas {
 
             let mask_src = init_texture(&gl)?;
             let mask_dst = init_texture(&gl)?;
-
             let mask_fb = gl.create_framebuffer()?;
-            gl.bind_framebuffer(FRAMEBUFFER, Some(mask_fb));
 
             gl.enable(BLEND);
             gl.blend_func(SRC_ALPHA, ONE_MINUS_SRC_ALPHA);
@@ -136,15 +134,24 @@ impl Es2Canvas {
             gl.disable(DEPTH_TEST);
             gl.depth_mask(false);
 
+            let render_fb = gl.create_framebuffer()?;
             let render_buffer = gl.create_renderbuffer()?;
+
+            // allocate renderbuffer storage
             gl.bind_renderbuffer(RENDERBUFFER, Some(render_buffer));
             gl.renderbuffer_storage(RENDERBUFFER, RGB565, fb_size.x, fb_size.y);
+
+            // bind framebuffer and renderbuffer
+            gl.bind_framebuffer(FRAMEBUFFER, Some(render_fb));
             gl.framebuffer_renderbuffer(FRAMEBUFFER, COLOR_ATTACHMENT0, RENDERBUFFER, Some(render_buffer));
 
             let status = gl.check_framebuffer_status(FRAMEBUFFER);
             if status != FRAMEBUFFER_COMPLETE {
                 return Err(format!("Failed to create render buffer: status = {status}"));
             }
+
+            gl.bind_framebuffer(FRAMEBUFFER, None);
+            // std::println!("init: error={:?}", gl.get_error());
 
             // todo: check actual renderbuffer format
             // todo: maybe try OES_rgb8_rgba8 extension
@@ -155,7 +162,7 @@ impl Es2Canvas {
                 color_program,
                 mask_src,
                 mask_dst,
-                // render_buffer,
+                render_fb,
                 mask_fb,
                 fb_size,
             })
@@ -165,18 +172,25 @@ impl Es2Canvas {
     fn tile_pass(&mut self, cbc: &[CubicBezier], x: i32, y: i32) {
         unsafe {
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.mask_fb));
+            // std::println!("bind_framebuffer: error={:?}", self.gl.get_error());
+
             self.gl.use_program(Some(self.mask_program));
+            // std::println!("use_program: error={:?}", self.gl.get_error());
 
             let init_loc = self.gl.get_uniform_location(self.mask_program, "init");
             self.gl.uniform_1_i32(init_loc.as_ref(), 1);
+            // std::println!("init: error={:?}", self.gl.get_error());
 
             let loc = self.gl.get_uniform_location(self.mask_program, "height");
-            self.gl.uniform_1_i32(loc.as_ref(), self.fb_size.y);
+            self.gl.uniform_1_f32(loc.as_ref(), self.fb_size.y as f32);
+            // std::println!("height: error={:?}", self.gl.get_error());
 
             let loc = self.gl.get_uniform_location(self.mask_program, "offset");
-            self.gl.uniform_2_i32(loc.as_ref(), x, y);
+            self.gl.uniform_2_f32(loc.as_ref(), x as f32, y as f32);
+            // std::println!("offset: error={:?}", self.gl.get_error());
 
             self.gl.viewport(0, 0, 256, 256);
+            // std::println!("viewport: error={:?}", self.gl.get_error());
 
             for (i, curve) in cbc.iter().enumerate() {
                 let coords = [
@@ -187,19 +201,23 @@ impl Es2Canvas {
                 ];
 
                 let loc = self.gl.get_uniform_location(self.mask_program, "input_curve");
-                self.gl.uniform_2_f32_slice(loc.as_ref(), &coords);
+                self.gl.uniform_1_f32_slice(loc.as_ref(), &coords);
+                // std::println!("input_curve: error={:?}", self.gl.get_error());
 
                 self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
                 self.gl.framebuffer_texture_2d(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, Some(self.mask_dst), 0);
+                // std::println!("framebuffer_texture_2d: error={:?}", self.gl.get_error());
 
                 // use the square from Self::init()
                 let (offset, count) = (0, 4);
                 self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
+                // std::println!("draw_arrays: error={:?}", self.gl.get_error());
 
                 swap(&mut self.mask_src, &mut self.mask_dst);
 
                 if i == 0 {
                     self.gl.uniform_1_i32(init_loc.as_ref(), 0);
+                    // std::println!("init_2: error={:?}", self.gl.get_error());
                 }
             }
         }
@@ -207,28 +225,43 @@ impl Es2Canvas {
         // color pass
         unsafe {
             self.gl.use_program(Some(self.color_program));
+            // std::println!("[color] use_program: error={:?}", self.gl.get_error());
 
             let loc = self.gl.get_uniform_location(self.color_program, "height");
-            self.gl.uniform_1_i32(loc.as_ref(), self.fb_size.y);
+            self.gl.uniform_1_f32(loc.as_ref(), self.fb_size.y as f32);
+            // std::println!("[color] height: error={:?}", self.gl.get_error());
 
             let loc = self.gl.get_uniform_location(self.color_program, "offset");
-            self.gl.uniform_2_i32(loc.as_ref(), x, y);
+            self.gl.uniform_2_f32(loc.as_ref(), x as f32, y as f32);
+            // std::println!("[color] offset: error={:?}", self.gl.get_error());
 
             self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
-            self.gl.bind_framebuffer(FRAMEBUFFER, None);
+            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
+                // std::println!("[color] framebuffer_texture_2d: error={:?}", self.gl.get_error());
 
             self.gl.viewport(x, y, 256, 256);
 
             // use the square from Self::init()
             let (offset, count) = (0, 4);
             self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
+            // std::println!("color pass: error={:?}", self.gl.get_error());
         }
     }
 
     pub fn read_rgb565(&self, pixels: &mut [u8]) {
+        assert_eq!((self.fb_size.x * self.fb_size.y * 2) as usize, pixels.len());
         unsafe {
+            self.gl.flush();
+            self.gl.finish();
+            // std::println!("finish: error={:?}", self.gl.get_error());
+
+            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
             let data = PixelPackData::Slice(Some(pixels));
-            self.gl.read_pixels(0, 0, self.fb_size.x, self.fb_size.y, RGB, RGB565, data);
+            self.gl.read_buffer(COLOR_ATTACHMENT0);
+            // std::println!("read_buffer: error={:?}", self.gl.get_error());
+
+            self.gl.read_pixels(0, 0, self.fb_size.x, self.fb_size.y, RGB, UNSIGNED_SHORT_5_6_5, data);
+            // std::println!("read_pixels: error={:?}", self.gl.get_error());
         }
     }
 }
@@ -244,9 +277,11 @@ impl Canvas for Es2Canvas {
 
     fn clear(&mut self) {
         unsafe {
-            self.gl.bind_framebuffer(FRAMEBUFFER, None);
-            self.gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
+            self.gl.viewport(0, 0, self.fb_size.x, self.fb_size.y);
+            self.gl.clear_color(0.0, 0.0, 0.0, 1.0);
             self.gl.clear(COLOR_BUFFER_BIT);
+            // std::println!("clear: error={:?}", self.gl.get_error());
         }
     }
 
@@ -259,6 +294,11 @@ impl Canvas for Es2Canvas {
                 x += 256;
             }
             y += 256;
+        }
+
+        unsafe {
+            self.gl.flush();
+            // std::println!("flush: error={:?}", self.gl.get_error());
         }
     }
 }

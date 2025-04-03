@@ -1,21 +1,11 @@
-use rgb::AsPixels;
-use wizdraw::{CubicBezier, Canvas, Color, Texture, Point, contour, SsaaConfig};
+use wizdraw::{CubicBezier, Canvas, Texture, Point, SsaaConfig};
 
 use std::time::Instant;
 
 use std::fs::File;
 use std::io::BufWriter;
 
-const GRID_PNG: &'static [u8] = include_bytes!("../../misc/grid.png");
-
-fn read_grid_png() -> (usize, usize, Vec<u8>) {
-    let decoder = png::Decoder::new(GRID_PNG);
-    let mut reader = decoder.read_info().unwrap();
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).unwrap();
-    buf.truncate(info.buffer_size());
-    (info.width as _, info.height as _, buf)
-}
+use khronos_egl as egl;
 
 fn main() {
     let w = 1280usize;
@@ -24,24 +14,42 @@ fn main() {
     let wf = w as f32;
     let hf = h as f32;
 
-    let (gl, _window, _events_loop, _context) = {
-        let sdl = sdl2::init().unwrap();
-        let video = sdl.video().unwrap();
-        let gl_attr = video.gl_attr();
-        gl_attr.set_context_profile(sdl2::video::GLProfile::Core);
-        gl_attr.set_context_version(2, 0);
-        let window = video
-            .window("Hello triangle!", 1024, 769)
-            .opengl()
-            .resizable()
-            .build()
-            .unwrap();
-        let gl_context = window.gl_create_context().unwrap();
-        let gl = unsafe {
-            glow::Context::from_loader_function(|s| video.gl_get_proc_address(s) as *const _)
-        };
-        let event_loop = sdl.event_pump().unwrap();
-        (gl, window, event_loop, gl_context)
+    let egl = unsafe {
+        let lib = libloading::Library::new("libEGL.so.1").unwrap();
+        egl::DynamicInstance::<egl::EGL1_4>::load_required_from(lib).unwrap()
+    };
+
+    let display = unsafe { egl.get_display(egl::DEFAULT_DISPLAY) }.unwrap();
+    egl.initialize(display).unwrap();
+
+    println!("Display Initialized");
+
+    let attributes = [
+        egl::RED_SIZE, 5,
+        egl::GREEN_SIZE, 6,
+        egl::BLUE_SIZE, 5,
+        egl::NONE
+    ];
+
+    let maybe_config = egl.choose_first_config(display, &attributes).unwrap();
+    let config = maybe_config.expect("No compatible EGL config");
+
+    let ctx_attr = [
+        egl::CONTEXT_MAJOR_VERSION, 2,
+        // egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        egl::NONE
+    ];
+
+    let ctx = egl.create_context(display, config, None, &ctx_attr).unwrap();
+    egl.make_current(display, None, None, Some(ctx)).unwrap();
+
+    let gl = unsafe {
+        glow::Context::from_loader_function(|s| {
+            match egl.get_proc_address(s) {
+                Some(ptr) => ptr as *const _,
+                None => std::ptr::null(),
+            }
+        })
     };
 
     let mut canvas = wizdraw::opengl::Es2Canvas::init(gl, w as _, h as _).unwrap();
@@ -61,34 +69,13 @@ fn main() {
         },
     ];
 
-    let (tex_w, tex_h, tex_p) = read_grid_png();
-
-    let mut line = Vec::new();
-    contour(path.as_slice(), 5.0, &mut line, 0.5);
-
-    let green = Color::new(100, 200, 150, 255);
-    let contour = Texture::SolidColor(green);
-
     canvas.clear();
-
-    let bitmap = canvas.alloc_bitmap(tex_w, tex_h);
-    canvas.fill_bitmap(bitmap, 0, 0, tex_w, tex_h, tex_p.as_pixels());
-
-    let texture = Texture::QuadBitmap {
-        top_left:  Point::new(0.410 * wf, 0.300 * hf),
-        top_right: Point::new(0.590 * wf, 0.370 * hf),
-        btm_left:  Point::new(0.410 * wf, 0.700 * hf),
-        btm_right: Point::new(0.590 * wf, 0.630 * hf),
-        bitmap,
-    };
 
     if true {
         let then = Instant::now();
         let num = 20;
         for _ in 0..num {
             canvas.fill_cbc(&path, &Texture::Debug, SsaaConfig::None);
-            canvas.fill_cbc(&path, &texture, SsaaConfig::None);
-            canvas.fill_cbc(&line, &contour, SsaaConfig::None);
         }
         let avg_ms = then.elapsed().as_micros() / num;
         let fps = 1000000 / avg_ms;

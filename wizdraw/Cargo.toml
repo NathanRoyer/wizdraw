@@ -24,4 +24,5 @@ std = []
 
 [dev-dependencies]
 png = "0.17"
-sdl2 = "0.37"
+khronos-egl = { version = "6.0", features = ["dynamic"] }
+libloading = "*"
