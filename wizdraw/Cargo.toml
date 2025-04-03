@@ -17,6 +17,7 @@ rgb = { version = "0.8" }
 [features]
 default = [ "contour", "shapes" ]
 gles2 = [ "dep:glow", "std" ]
+gl-debug = []
 contour = []
 shapes = []
 simd = []

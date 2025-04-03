@@ -82,17 +82,18 @@ fn main() {
         println!("{:?}: {}us = {} FPS", SsaaConfig::None, avg_ms, fps);
     }
 
-    let mut rgb565 = vec![0; 2 * w * h];
-    canvas.read_rgb565(&mut rgb565);
+    let mut rgba5551 = vec![0; 2 * w * h];
+    canvas.read_rgba5551(&mut rgba5551);
 
     let mut rgba = Vec::new();
 
-    for chunk in rgb565.chunks_exact(2) {
-        if let [rg, gb] = chunk {
-            rgba.push(rg & 0xf8);
-            rgba.push((rg << 5) | ((gb >> 3) & 0x1c));
-            rgba.push(gb & 0x1f);
-            rgba.push(255);
+    for chunk in rgba5551.chunks_exact(2) {
+        if let [rg, gba] = chunk {
+            let word = u16::from_le_bytes([*rg, *gba]);
+            rgba.push(((word >> 8) & 0xf8) as u8);
+            rgba.push(((word >> 3) & 0xf8) as u8);
+            rgba.push(((word << 2) & 0xf8) as u8);
+            rgba.push((word as u8 & 1) * 255);
         }
     }
 

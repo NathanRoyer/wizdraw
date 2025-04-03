@@ -1,20 +1,31 @@
 pub use super::*;
+use rgb::ComponentMap;
 use core::array::from_fn;
-use core::mem::swap;
+use core::mem::{swap, take};
 
-use glow::{Context, HasContext, PixelUnpackData, PixelPackData, Renderbuffer};
+use glow::{Context, HasContext, PixelUnpackData, PixelPackData};
 use glow::{NativeShader, NativeTexture, NativeProgram, Framebuffer};
 
 use glow::{
     VERTEX_SHADER, FRAGMENT_SHADER, TEXTURE_2D, TEXTURE_MAG_FILTER, TEXTURE_MIN_FILTER,
-    NEAREST, RGB, UNSIGNED_SHORT_5_6_5, FRAMEBUFFER, BLEND, SRC_ALPHA, ONE_MINUS_SRC_ALPHA,
-    DEPTH_TEST, FLOAT, ARRAY_BUFFER, DYNAMIC_DRAW, RENDERBUFFER, RGB565, COLOR_ATTACHMENT0,
-    FRAMEBUFFER_COMPLETE, COLOR_BUFFER_BIT, TRIANGLE_STRIP, LINK_STATUS,
+    NEAREST, RGBA, FRAMEBUFFER, BLEND, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DEPTH_TEST, FLOAT,
+    ARRAY_BUFFER, DYNAMIC_DRAW, RENDERBUFFER, RGB5_A1, COLOR_ATTACHMENT0, LINK_STATUS,
+    FRAMEBUFFER_COMPLETE, COLOR_BUFFER_BIT, TRIANGLE_STRIP,
 };
+
+use glow::UNSIGNED_SHORT_5_5_5_1 as RGBA5551;
 
 // todo
 // mod drm_kms;
 
+pub struct TexTile {
+    offset: Vec2<usize>,
+    tex_id: NativeTexture,
+}
+
+pub struct TexData {
+    tiles: Box<[TexTile]>,
+}
 
 pub struct Es2Canvas {
     gl: Context,
@@ -25,6 +36,150 @@ pub struct Es2Canvas {
     render_fb: Framebuffer,
     mask_fb: Framebuffer,
     fb_size: Vec2<i32>,
+    tex_buf: Box<[u8]>,
+    textures: Vec<TexData>,
+}
+
+impl Canvas for Es2Canvas {
+    fn framebuffer_size(&self) -> Vec2<usize> {
+        self.fb_size.map(|n| n as _)
+    }
+
+    fn alloc_bitmap(&mut self, width: usize, height: usize) -> BitmapHandle {
+        let index = self.textures.len();
+        let mut tiles = Vec::new();
+
+        for y in (0..width).step_by(256) {
+            for x in (0..height).step_by(256) {
+                let Ok(tex_id) = (unsafe { init_texture(&self.gl) }) else {
+                    // error!
+                    return BitmapHandle(usize::MAX);
+                };
+
+                let tile = TexTile {
+                    offset: Vec2::new(x, y),
+                    tex_id,
+                };
+
+                tiles.push(tile);
+            }
+        }
+
+        let tex_data = TexData {
+            tiles: tiles.into(),
+        };
+
+        self.textures.push(tex_data);
+        BitmapHandle(index)
+    }
+
+    fn fill_bitmap(&mut self, bitmap: BitmapHandle, x: usize, y: usize, w: usize, h: usize, buf: &[Color]) {
+        let tiles = &self.textures[bitmap.0].tiles;
+
+        let max_x = x + w;
+        let max_y = y + h;
+
+        for tile in tiles {
+            let tile_max_x = tile.offset.x + 256;
+            let tile_max_y = tile.offset.y + 256;
+
+            let x_overlap = (x < tile_max_x) & (max_x >= tile.offset.x);
+            let y_overlap = (y < tile_max_y) & (max_y >= tile.offset.y);
+
+            if !(x_overlap & y_overlap) {
+                continue;
+            }
+
+            let x_full_coverage = (x <= tile.offset.x) & (max_x >= tile_max_x);
+            let y_full_coverage = (y <= tile.offset.y) & (max_y >= tile_max_y);
+
+            if !(x_full_coverage & y_full_coverage) {
+                unsafe {
+                    let dst = PixelPackData::Slice(Some(&mut self.tex_buf));
+                    self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
+                    self.gl.get_tex_image(TEXTURE_2D, 0, RGBA, RGBA5551, dst);
+                }
+            }
+
+            let x_start = x.max(tile.offset.x);
+            let y_start = y.max(tile.offset.y);
+            let x_stop = max_x.min(tile_max_x);
+            let y_stop = max_y.min(tile_max_y);
+
+            for tex_y in y_start..y_stop {
+                for tex_x in x_start..x_stop {
+                    let (dst_x, dst_y) = (tex_x - tile.offset.x, tex_y - tile.offset.y);
+                    let (src_x, src_y) = (tex_x - x, tex_y - y);
+                    let src_color = buf[src_y * h + src_x];
+                    let [rg, gb] = into_rgba5551(src_color);
+                    let dst_index = (dst_y * 256 + dst_x) * 2;
+                    self.tex_buf[dst_index + 0] = rg;
+                    self.tex_buf[dst_index + 1] = gb;
+                }
+            }
+
+            unsafe {
+                let src = PixelUnpackData::Slice(Some(&self.tex_buf));
+                self.gl.tex_image_2d(TEXTURE_2D, 0, RGBA as i32, 256, 256, 0, RGBA, RGBA5551, src);
+            }
+        }
+    }
+
+    fn free_bitmap(&mut self, bitmap: BitmapHandle) {
+        let tiles = take(&mut self.textures[bitmap.0].tiles);
+        for tex_tile in tiles {
+            unsafe { self.gl.delete_texture(tex_tile.tex_id) };
+        }
+    }
+
+    fn clear(&mut self) {
+        unsafe {
+            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
+            self.gl.viewport(0, 0, self.fb_size.x, self.fb_size.y);
+            self.gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            self.gl.clear(COLOR_BUFFER_BIT);
+            debug(&self.gl, "clear");
+        }
+    }
+
+    fn fill_cbc(&mut self, path: &[CubicBezier], texture: &Texture, _ssaa: SsaaConfig) {
+        let mut shape_aabb = BoundingBox::default();
+
+        for curve in path {
+            shape_aabb = shape_aabb.union(curve.aabb());
+        }
+
+        for y in (0..self.fb_size.y).step_by(256) {
+            for x in (0..self.fb_size.x).step_by(256) {
+                let (x_f32, y_f32) = (x as f32, y as f32);
+                let (tile_max_x, tile_max_y) = (x_f32 + 256.0, y_f32 + 256.0);
+
+                let x_overlap = (shape_aabb.min.x < tile_max_x) & (shape_aabb.max.x >= x_f32);
+                let y_overlap = (shape_aabb.min.y < tile_max_y) & (shape_aabb.max.y >= y_f32);
+
+                if !(x_overlap & y_overlap) {
+                    continue;
+                }
+
+                self.tile_pass(path, x, y, texture);
+            }
+        }
+
+        unsafe {
+            self.gl.flush();
+            debug(&self.gl, "flush");
+        }
+    }
+}
+
+fn into_rgba5551(color: Color) -> [u8; 2] {
+    let color = color.map(u16::from);
+    let mut word = 0u16;
+    word |= (color.r & 0xf8) << 11;
+    word |= (color.g & 0xf8) << 6;
+    word |= (color.b & 0xf8) << 1;
+    word |= color.a >> 7;
+    word.to_le_bytes()
 }
 
 unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<NativeShader, String> {
@@ -47,9 +202,8 @@ unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
 
     let side = 256;
     let level = 0;
-    let format = RGB;
+    let format = RGBA;
     let border = 0;
-    let tex_type = UNSIGNED_SHORT_5_6_5;
     let data = PixelUnpackData::Slice(None);
 
     gl.tex_image_2d(
@@ -60,7 +214,7 @@ unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
         side,
         border,
         format,
-        tex_type,
+        RGBA5551,
         data,
     );
 
@@ -139,7 +293,7 @@ impl Es2Canvas {
 
             // allocate renderbuffer storage
             gl.bind_renderbuffer(RENDERBUFFER, Some(render_buffer));
-            gl.renderbuffer_storage(RENDERBUFFER, RGB565, fb_size.x, fb_size.y);
+            gl.renderbuffer_storage(RENDERBUFFER, RGB5_A1, fb_size.x, fb_size.y);
 
             // bind framebuffer and renderbuffer
             gl.bind_framebuffer(FRAMEBUFFER, Some(render_fb));
@@ -151,10 +305,12 @@ impl Es2Canvas {
             }
 
             gl.bind_framebuffer(FRAMEBUFFER, None);
-            // std::println!("init: error={:?}", gl.get_error());
+            debug(&gl, "init");
 
             // todo: check actual renderbuffer format
             // todo: maybe try OES_rgb8_rgba8 extension
+
+            let tex_buf = vec![0; 256 * 256 * 2].into();
 
             Ok(Self {
                 gl,
@@ -165,34 +321,36 @@ impl Es2Canvas {
                 render_fb,
                 mask_fb,
                 fb_size,
+                tex_buf,
+                textures: Vec::new(),
             })
         }
     }
 
-    fn tile_pass(&mut self, cbc: &[CubicBezier], x: i32, y: i32) {
+    fn tile_pass(&mut self, path: &[CubicBezier], x: i32, y: i32, texture: &Texture) {
         unsafe {
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.mask_fb));
-            // std::println!("bind_framebuffer: error={:?}", self.gl.get_error());
+            debug(&self.gl, "bind_framebuffer");
 
             self.gl.use_program(Some(self.mask_program));
-            // std::println!("use_program: error={:?}", self.gl.get_error());
+            debug(&self.gl, "use_program");
 
             let init_loc = self.gl.get_uniform_location(self.mask_program, "init");
             self.gl.uniform_1_i32(init_loc.as_ref(), 1);
-            // std::println!("init: error={:?}", self.gl.get_error());
+            debug(&self.gl, "init");
 
             let loc = self.gl.get_uniform_location(self.mask_program, "height");
             self.gl.uniform_1_f32(loc.as_ref(), self.fb_size.y as f32);
-            // std::println!("height: error={:?}", self.gl.get_error());
+            debug(&self.gl, "height");
 
             let loc = self.gl.get_uniform_location(self.mask_program, "offset");
             self.gl.uniform_2_f32(loc.as_ref(), x as f32, y as f32);
-            // std::println!("offset: error={:?}", self.gl.get_error());
+            debug(&self.gl, "offset");
 
             self.gl.viewport(0, 0, 256, 256);
-            // std::println!("viewport: error={:?}", self.gl.get_error());
+            debug(&self.gl, "viewport");
 
-            for (i, curve) in cbc.iter().enumerate() {
+            for (i, curve) in path.iter().enumerate() {
                 let coords = [
                     curve.c1.x, curve.c1.y,
                     curve.c2.x, curve.c2.y,
@@ -202,22 +360,22 @@ impl Es2Canvas {
 
                 let loc = self.gl.get_uniform_location(self.mask_program, "input_curve");
                 self.gl.uniform_1_f32_slice(loc.as_ref(), &coords);
-                // std::println!("input_curve: error={:?}", self.gl.get_error());
+                debug(&self.gl, "input_curve");
 
                 self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
                 self.gl.framebuffer_texture_2d(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, Some(self.mask_dst), 0);
-                // std::println!("framebuffer_texture_2d: error={:?}", self.gl.get_error());
+                debug(&self.gl, "framebuffer_texture_2d");
 
                 // use the square from Self::init()
                 let (offset, count) = (0, 4);
                 self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
-                // std::println!("draw_arrays: error={:?}", self.gl.get_error());
+                debug(&self.gl, "draw_arrays");
 
                 swap(&mut self.mask_src, &mut self.mask_dst);
 
                 if i == 0 {
                     self.gl.uniform_1_i32(init_loc.as_ref(), 0);
-                    // std::println!("init_2: error={:?}", self.gl.get_error());
+                    debug(&self.gl, "init_2");
                 }
             }
         }
@@ -225,80 +383,80 @@ impl Es2Canvas {
         // color pass
         unsafe {
             self.gl.use_program(Some(self.color_program));
-            // std::println!("[color] use_program: error={:?}", self.gl.get_error());
+            debug(&self.gl, "[color] use_program");
 
             let loc = self.gl.get_uniform_location(self.color_program, "height");
             self.gl.uniform_1_f32(loc.as_ref(), self.fb_size.y as f32);
-            // std::println!("[color] height: error={:?}", self.gl.get_error());
+            debug(&self.gl, "[color] height");
 
             let loc = self.gl.get_uniform_location(self.color_program, "offset");
             self.gl.uniform_2_f32(loc.as_ref(), x as f32, y as f32);
-            // std::println!("[color] offset: error={:?}", self.gl.get_error());
+            debug(&self.gl, "[color] offset");
+
+            let (mode, param_1, param_2) = match texture {
+                Texture::SolidColor(color) => (0, color.map(|c| c as f32).into(), [0.0; 4]),
+                Texture::Gradient(_slice) => todo!(),
+                Texture::Debug => (2, [0.0; 4], [0.0; 4]),
+                Texture::Bitmap {
+                    top_left,
+                    scale,
+                    repeat,
+                    bitmap,
+                } => {
+                    todo!()
+                },
+                Texture::QuadBitmap {
+                    top_left,
+                    btm_left,
+                    top_right,
+                    btm_right,
+                    bitmap,
+                } => {
+                    todo!()
+                },
+            };
+
+            let loc = self.gl.get_uniform_location(self.color_program, "mode");
+            self.gl.uniform_1_i32(loc.as_ref(), mode);
+            debug(&self.gl, "[color] mode");
 
             self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
-                // std::println!("[color] framebuffer_texture_2d: error={:?}", self.gl.get_error());
+                debug(&self.gl, "[color] framebuffer_texture_2d");
 
             self.gl.viewport(x, y, 256, 256);
 
             // use the square from Self::init()
             let (offset, count) = (0, 4);
             self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
-            // std::println!("color pass: error={:?}", self.gl.get_error());
+            debug(&self.gl, "color pass");
         }
     }
 
-    pub fn read_rgb565(&self, pixels: &mut [u8]) {
+    pub fn read_rgba5551(&self, pixels: &mut [u8]) {
         assert_eq!((self.fb_size.x * self.fb_size.y * 2) as usize, pixels.len());
         unsafe {
             self.gl.flush();
             self.gl.finish();
-            // std::println!("finish: error={:?}", self.gl.get_error());
+            debug(&self.gl, "finish");
 
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
             let data = PixelPackData::Slice(Some(pixels));
             self.gl.read_buffer(COLOR_ATTACHMENT0);
-            // std::println!("read_buffer: error={:?}", self.gl.get_error());
+            debug(&self.gl, "read_buffer");
 
-            self.gl.read_pixels(0, 0, self.fb_size.x, self.fb_size.y, RGB, UNSIGNED_SHORT_5_6_5, data);
-            // std::println!("read_pixels: error={:?}", self.gl.get_error());
+            self.gl.read_pixels(0, 0, self.fb_size.x, self.fb_size.y, RGBA, RGBA5551, data);
+            debug(&self.gl, "read_pixels");
         }
     }
 }
 
-impl Canvas for Es2Canvas {
-    fn framebuffer_size(&self) -> Vec2<usize> {
-        self.fb_size.map(|n| n as _)
-    }
-
-    fn alloc_bitmap(&mut self, _width: usize, _height: usize) -> BitmapHandle { BitmapHandle(0) }
-    fn fill_bitmap(&mut self, _bitmap: BitmapHandle, _x: usize, _y: usize, _w: usize, _h: usize, _buf: &[Color]) { }
-    fn free_bitmap(&mut self, _bitmap: BitmapHandle) { }
-
-    fn clear(&mut self) {
-        unsafe {
-            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
-            self.gl.viewport(0, 0, self.fb_size.x, self.fb_size.y);
-            self.gl.clear_color(0.0, 0.0, 0.0, 1.0);
-            self.gl.clear(COLOR_BUFFER_BIT);
-            // std::println!("clear: error={:?}", self.gl.get_error());
-        }
-    }
-
-    fn fill_cbc(&mut self, cbc: &[CubicBezier], _texture: &Texture, _ssaa: SsaaConfig) {
-        let mut y = 0;
-        while y < self.fb_size.y {
-            let mut x = 0;
-            while x < self.fb_size.x {
-                self.tile_pass(cbc, x, y);
-                x += 256;
-            }
-            y += 256;
-        }
-
-        unsafe {
-            self.gl.flush();
-            // std::println!("flush: error={:?}", self.gl.get_error());
+fn debug(_gl: &Context, _operation: &str) {
+    #[cfg(feature = "gl-debug")]
+    unsafe {
+        let error = _gl.get_error();
+        if error != 0 {
+            std::println!("{_operation}: error={error}");
         }
     }
 }
