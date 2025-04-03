@@ -7,7 +7,7 @@ uniform sampler2D opacity;
 
 uniform vec2 bmp_size;
 uniform vec2 bmp_tile_offset;
-// uniform sampler2D bmp_tile;
+uniform sampler2D bmp_tile;
 
 // 0 = solid color
 // 1 = gradient (todo)
@@ -62,29 +62,29 @@ void main() {
         // bitmap
 
         // parameters
-        vec2 top_left = param_1.xy;
-        float scale = param_1.z;
-        bool repeat = param_1.w != 0.0;
+        vec2 top_left = param_1.xy; // 600, 400
+        float scale = param_1.z; // 1.0
+        bool repeat = param_1.w != 0.0; // true
 
-        vec2 scaled_size = bmp_size * scale;
+        vec2 scaled_size = bmp_size * scale; // 316, 316
 
-        vec2 offset = gl_FragCoord.xy - top_left;
+        vec2 offset = gl_FragCoord.xy - top_left; // 10, 10
         if (repeat) offset = mod(offset, scaled_size);
 
-        float min_x = bmp_tile_offset.x * scale;
-        float min_y = bmp_tile_offset.y * scale;
-        float max_x = min_x + (256.0 * scale);
-        float max_y = min_y + (256.0 * scale);
+        offset = offset / scale; // 10, 10
+        // offset = offset - bmp_tile_offset; // 60, 60
+        offset = offset / bmp_size;
 
-        bool invalid_x = min_x > offset.x || offset.x > max_x;
-        bool invalid_y = min_y > offset.y || offset.y > max_y;
+        bool invalid_x = 0.0 > offset.x || offset.x > 1.0;
+        bool invalid_y = 0.0 > offset.y || offset.y > 1.0;
 
         if (invalid_x || invalid_y) {
             // out of bounds
             discard;
         }
 
-        gl_FragColor = texture2D(opacity, offset / scale);
+        gl_FragColor = texture2D(bmp_tile, offset);
+        // gl_FragColor = vec4(offset, 0.5, 1);
 
     } else if (mode == 4) {
         // quad bitmap

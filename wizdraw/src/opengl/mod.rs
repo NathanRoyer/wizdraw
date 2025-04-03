@@ -10,7 +10,7 @@ use glow::{
     VERTEX_SHADER, FRAGMENT_SHADER, TEXTURE_2D, TEXTURE_MAG_FILTER, TEXTURE_MIN_FILTER,
     NEAREST, RGBA, FRAMEBUFFER, BLEND, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DEPTH_TEST, FLOAT,
     ARRAY_BUFFER, DYNAMIC_DRAW, RENDERBUFFER, RGB5_A1, COLOR_ATTACHMENT0, LINK_STATUS,
-    FRAMEBUFFER_COMPLETE, COLOR_BUFFER_BIT, TRIANGLE_STRIP,
+    FRAMEBUFFER_COMPLETE, COLOR_BUFFER_BIT, TRIANGLE_STRIP, TEXTURE0, TEXTURE1,
 };
 
 use glow::UNSIGNED_SHORT_5_5_5_1 as RGBA5551;
@@ -25,6 +25,7 @@ pub struct TexTile {
 
 pub struct TexData {
     tiles: Box<[TexTile]>,
+    size: Vec2<i32>,
 }
 
 pub struct Es2Canvas {
@@ -67,6 +68,7 @@ impl Canvas for Es2Canvas {
 
         let tex_data = TexData {
             tiles: tiles.into(),
+            size: Vec2::new(width as i32, height as i32),
         };
 
         self.textures.push(tex_data);
@@ -96,8 +98,10 @@ impl Canvas for Es2Canvas {
             if !(x_full_coverage & y_full_coverage) {
                 unsafe {
                     let dst = PixelPackData::Slice(Some(&mut self.tex_buf));
+                    self.gl.active_texture(TEXTURE0);
                     self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
                     self.gl.get_tex_image(TEXTURE_2D, 0, RGBA, RGBA5551, dst);
+                    let _ = self.gl.get_error();
                 }
             }
 
@@ -110,17 +114,18 @@ impl Canvas for Es2Canvas {
                 for tex_x in x_start..x_stop {
                     let (dst_x, dst_y) = (tex_x - tile.offset.x, tex_y - tile.offset.y);
                     let (src_x, src_y) = (tex_x - x, tex_y - y);
-                    let src_color = buf[src_y * h + src_x];
-                    let [rg, gb] = into_rgba5551(src_color);
+                    let src_color = buf[src_y * w + src_x];
+                    let [rg, gba] = into_rgba5551(src_color);
                     let dst_index = (dst_y * 256 + dst_x) * 2;
                     self.tex_buf[dst_index + 0] = rg;
-                    self.tex_buf[dst_index + 1] = gb;
+                    self.tex_buf[dst_index + 1] = gba;
                 }
             }
 
             unsafe {
                 let src = PixelUnpackData::Slice(Some(&self.tex_buf));
                 self.gl.tex_image_2d(TEXTURE_2D, 0, RGBA as i32, 256, 256, 0, RGBA, RGBA5551, src);
+                debug(&self.gl, "tex_image_2d");
             }
         }
     }
@@ -196,6 +201,7 @@ unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<Nativ
 
 unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
     let tex = gl.create_texture()?;
+    gl.active_texture(TEXTURE0);
     gl.bind_texture(TEXTURE_2D, Some(tex));
     gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MIN_FILTER, NEAREST as i32);
     gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MAG_FILTER, NEAREST as i32);
@@ -255,6 +261,15 @@ impl Es2Canvas {
             let v_shader = include_str!("color-vertex-shader.glsl");
             let f_shader = include_str!("color-fragment-shader.glsl");
             let color_program = init_program(&gl, v_shader, f_shader)?;
+
+            gl.use_program(Some(color_program));
+            let loc = gl.get_uniform_location(color_program, "opacity");
+            gl.uniform_1_i32(loc.as_ref(), 0);
+            debug(&gl, "opacity texture");
+
+            let loc = gl.get_uniform_location(color_program, "bmp_tile");
+            gl.uniform_1_i32(loc.as_ref(), 1);
+            debug(&gl, "bmp_tile texture");
 
             let Some(mask_attr) = gl.get_attrib_location(mask_program, "a_position") else {
                 return Err("Failed to locate a_position attribute".into());
@@ -328,6 +343,7 @@ impl Es2Canvas {
     }
 
     fn tile_pass(&mut self, path: &[CubicBezier], x: i32, y: i32, texture: &Texture) {
+        debug(&self.gl, "tile_pass");
         unsafe {
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.mask_fb));
             debug(&self.gl, "bind_framebuffer");
@@ -362,6 +378,7 @@ impl Es2Canvas {
                 self.gl.uniform_1_f32_slice(loc.as_ref(), &coords);
                 debug(&self.gl, "input_curve");
 
+                self.gl.active_texture(TEXTURE0);
                 self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
                 self.gl.framebuffer_texture_2d(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, Some(self.mask_dst), 0);
                 debug(&self.gl, "framebuffer_texture_2d");
@@ -380,6 +397,34 @@ impl Es2Canvas {
             }
         }
 
+        let (mode, param_1, param_2, bitmap) = match texture {
+            Texture::SolidColor(color) => {
+                let color = color.map(|c| c as f32);
+                (0, color.into(), [0.0; 4], None)
+            },
+            Texture::Gradient(_slice) => todo!(),
+            Texture::Debug => (2, [0.0; 4], [0.0; 4], None),
+            Texture::Bitmap {
+                top_left,
+                scale,
+                repeat,
+                bitmap,
+            } => {
+                let r = *repeat as u32 as f32;
+                let param_1 = [top_left.x, top_left.y, *scale, r];
+                (3, param_1, [0.0; 4], Some(bitmap))
+            },
+            Texture::QuadBitmap {
+                top_left: _top_left,
+                btm_left: _btm_left,
+                top_right: _top_right,
+                btm_right: _btm_right,
+                bitmap: _bitmap,
+            } => {
+                todo!()
+            },
+        };
+
         // color pass
         unsafe {
             self.gl.use_program(Some(self.color_program));
@@ -393,43 +438,50 @@ impl Es2Canvas {
             self.gl.uniform_2_f32(loc.as_ref(), x as f32, y as f32);
             debug(&self.gl, "[color] offset");
 
-            let (mode, param_1, param_2) = match texture {
-                Texture::SolidColor(color) => (0, color.map(|c| c as f32).into(), [0.0; 4]),
-                Texture::Gradient(_slice) => todo!(),
-                Texture::Debug => (2, [0.0; 4], [0.0; 4]),
-                Texture::Bitmap {
-                    top_left,
-                    scale,
-                    repeat,
-                    bitmap,
-                } => {
-                    todo!()
-                },
-                Texture::QuadBitmap {
-                    top_left,
-                    btm_left,
-                    top_right,
-                    btm_right,
-                    bitmap,
-                } => {
-                    todo!()
-                },
-            };
-
             let loc = self.gl.get_uniform_location(self.color_program, "mode");
             self.gl.uniform_1_i32(loc.as_ref(), mode);
             debug(&self.gl, "[color] mode");
 
+            let loc = self.gl.get_uniform_location(self.color_program, "param_1");
+            self.gl.uniform_4_f32_slice(loc.as_ref(), &param_1);
+            debug(&self.gl, "[color] param_1");
+
+            self.gl.active_texture(TEXTURE0);
             self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
                 debug(&self.gl, "[color] framebuffer_texture_2d");
 
             self.gl.viewport(x, y, 256, 256);
 
-            // use the square from Self::init()
-            let (offset, count) = (0, 4);
-            self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
-            debug(&self.gl, "color pass");
+            if let Some(bitmap) = bitmap {
+                let bitmap = &self.textures[bitmap.0];
+
+                let loc = self.gl.get_uniform_location(self.color_program, "bmp_size");
+                self.gl.uniform_2_f32(loc.as_ref(), bitmap.size.x as _, bitmap.size.y as _);
+                debug(&self.gl, "[color] bmp_size");
+
+                for tile in &bitmap.tiles {
+                    self.gl.active_texture(TEXTURE1);
+                    self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
+
+                    let loc = self.gl.get_uniform_location(self.color_program, "bmp_tile_offset");
+                    self.gl.uniform_2_f32(loc.as_ref(), tile.offset.x as _, tile.offset.y as _);
+                    debug(&self.gl, "[color] bmp_tile_offset");
+
+                    // use the square from Self::init()
+                    let (offset, count) = (0, 4);
+                    self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
+                    debug(&self.gl, "[color] bitmap draw");
+                }
+            } else {
+                self.gl.active_texture(TEXTURE1);
+                self.gl.bind_texture(TEXTURE_2D, None);
+
+                // use the square from Self::init()
+                let (offset, count) = (0, 4);
+                self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
+                debug(&self.gl, "[color] basic draw");
+            }
         }
     }
 
