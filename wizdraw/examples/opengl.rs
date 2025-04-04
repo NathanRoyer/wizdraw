@@ -1,27 +1,13 @@
-use wizdraw::{CubicBezier, Canvas, Texture, Point, SsaaConfig};
-use rgb::AsPixels;
-
-use std::time::Instant;
-
-use std::fs::File;
 use std::io::BufWriter;
+use std::fs::File;
 
 use khronos_egl as egl;
 
-const GRID_PNG: &'static [u8] = include_bytes!("../../misc/grid.png");
-
-fn read_grid_png() -> (usize, usize, Vec<u8>) {
-    let decoder = png::Decoder::new(GRID_PNG);
-    let mut reader = decoder.read_info().unwrap();
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).unwrap();
-    buf.truncate(info.buffer_size());
-    (info.width as _, info.height as _, buf)
-}
+mod _benchmark;
 
 fn main() {
-    let w = 1200usize;
-    let h = 800usize;
+    let w = 1280usize;
+    let h = 720usize;
 
     let wf = w as f32;
     let hf = h as f32;
@@ -66,45 +52,7 @@ fn main() {
 
     let mut canvas = wizdraw::opengl::Es2Canvas::init(gl, w as _, h as _).unwrap();
 
-    let path = [
-        CubicBezier {
-            c1: Point::new(0.250 * wf, 0.500 * hf),
-            c2: Point::new(0.250 * wf, 0.100 * hf),
-            c3: Point::new(0.750 * wf, 0.100 * hf),
-            c4: Point::new(0.750 * wf, 0.500 * hf),
-        },
-        CubicBezier {
-            c1: Point::new(0.750 * wf, 0.500 * hf),
-            c2: Point::new(0.750 * wf, 0.900 * hf),
-            c3: Point::new(0.250 * wf, 0.900 * hf),
-            c4: Point::new(0.250 * wf, 0.500 * hf),
-        },
-    ];
-
-    canvas.clear();
-
-    let (tex_w, tex_h, tex_p) = read_grid_png();
-    assert_eq!(tex_w * tex_h * 4, tex_p.len());
-    let bitmap = canvas.alloc_bitmap(tex_w, tex_h);
-    canvas.fill_bitmap(bitmap, 0, 0, tex_w, tex_h, tex_p.as_pixels());
-
-    if true {
-        let then = Instant::now();
-        let num = 20;
-        for _ in 0..num {
-            let texture = Texture::Bitmap {
-                top_left:  Point::new(0.500 * wf, 0.500 * hf),
-                scale: 0.5,
-                repeat: true,
-                bitmap,
-            };
-
-            canvas.fill_cbc(&path, &texture, SsaaConfig::None);
-        }
-        let avg_ms = then.elapsed().as_micros() / num;
-        let fps = 1000000 / avg_ms;
-        println!("{:?}: {}us = {} FPS", SsaaConfig::None, avg_ms, fps);
-    }
+    _benchmark::benchmark(&mut canvas, wf, hf);
 
     let mut rgba5551 = vec![0; 2 * w * h];
     canvas.read_rgba5551(&mut rgba5551);

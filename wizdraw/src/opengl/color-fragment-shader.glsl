@@ -1,5 +1,6 @@
 #version 100
 precision highp float;
+const float epsilon = 0.0001;
 
 uniform vec2 offset;
 uniform float height;
@@ -37,7 +38,34 @@ vec4 rainbow(vec2 point) {
     rainbow[7] = vec4(255, 255, 255,   0);
 
     float p = (point.x + point.y) / 16.0;
-    return rainbow[int(mod(p, 8.0))];
+    int i = int(mod(p, 8.0));
+    return rainbow[i] / 255.0;
+}
+
+vec4 sample_tile(vec2 offset) {
+    bool invalid_x = 0.0 > offset.x || offset.x > bmp_size.x;
+    bool invalid_y = 0.0 > offset.y || offset.y > bmp_size.y;
+
+    if (invalid_x || invalid_y) {
+        // out of bitmap bounds
+        discard;
+    }
+
+    offset = offset - bmp_tile_offset;
+    invalid_x = 0.0 > offset.x || offset.x > 255.0;
+    invalid_y = 0.0 > offset.y || offset.y > 255.0;
+
+    if (invalid_x || invalid_y) {
+        // out of bitmap tile bounds
+        discard;
+    }
+
+    offset = offset / 255.0;
+    return texture2D(bmp_tile, offset);
+}
+
+float wedge(vec2 a, vec2 b) {
+    return a.x * b.y - a.y * b.x;
 }
 
 void main() {
@@ -56,45 +84,78 @@ void main() {
     /*__*/ if (mode == 0) {
         // solid color
 
-        gl_FragColor = param_1;
+        gl_FragColor = param_1 / 255.0;
 
     } else if (mode == 3) {
         // bitmap
 
         // parameters
-        vec2 top_left = param_1.xy; // 600, 400
-        float scale = param_1.z; // 1.0
-        bool repeat = param_1.w != 0.0; // true
+        vec2 top_left = param_1.xy;
+        float scale = param_1.z;
+        bool repeat = param_1.w != 0.0;
 
-        vec2 scaled_size = bmp_size * scale; // 316, 316
+        vec2 scaled_size = bmp_size * scale;
 
-        vec2 offset = gl_FragCoord.xy - top_left; // 10, 10
+        vec2 offset = gl_FragCoord.xy - top_left;
         if (repeat) offset = mod(offset, scaled_size);
 
-        offset = offset / scale; // 10, 10
-        // offset = offset - bmp_tile_offset; // 60, 60
-        offset = offset / bmp_size;
+        offset = offset / scale;
 
-        bool invalid_x = 0.0 > offset.x || offset.x > 1.0;
-        bool invalid_y = 0.0 > offset.y || offset.y > 1.0;
-
-        if (invalid_x || invalid_y) {
-            // out of bounds
-            discard;
-        }
-
-        gl_FragColor = texture2D(bmp_tile, offset);
+        gl_FragColor = sample_tile(offset);
         // gl_FragColor = vec4(offset, 0.5, 1);
 
     } else if (mode == 4) {
         // quad bitmap
 
-        gl_FragColor = rainbow(gl_FragCoord.xy);
+        // corners of the quad
+        vec2 tl = param_1.xy;
+        vec2 bl = param_1.zw;
+        vec2 tr = param_2.xy;
+        vec2 br = param_2.zw;
+        vec2 pt = gl_FragCoord.xy;
+
+        vec2 e = tr - tl;
+        vec2 f = bl - tl;
+        vec2 g = tl - tr + br - bl;
+        vec2 h = pt - tl;
+
+        float k2 = wedge(g, f);
+        float k1 = wedge(e, f) + wedge(h, g);
+        float k0 = wedge(h, e);
+
+        float u, v;
+        if (abs(k2) < epsilon) {
+            // if edges are parallel, this is a linear equation
+
+            u = (h.x * k1 + f.x * k0) / (e.x * k1 - g.x * k0);
+            v = -k0 / k1;
+
+        } else {
+            // otherwise, it's a quadratic
+            float d = k1 * k1 - 4.0 * k0 * k2;
+
+            if (d < 0.0) {
+                discard;
+            }
+
+            float w = sqrt(d);
+
+            float ik2 = 0.5 / k2;
+            v = (-k1 - w) * ik2;
+            u = (h.x - f.x * v) / (e.x + g.x * v);
+
+            if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) {
+                v = (-k1 + w) * ik2;
+                u = (h.x - f.x * v) / (e.x + g.x * v);
+            }
+        }
+
+        // gl_FragColor = vec4(offset, 0.5, 1);
+        vec2 offset = vec2(u, v) * bmp_size;
+        gl_FragColor = sample_tile(offset);
 
     } else {
         // debug / gradient
-
         gl_FragColor = rainbow(gl_FragCoord.xy);
-
     }
 }

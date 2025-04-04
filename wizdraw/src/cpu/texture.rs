@@ -170,7 +170,7 @@ fn inverse_bilinear(
     let f = bl - tl;
     let g = tl - tr + br - bl;
     let h = pt - tl;
-        
+
     let k2 = wedge(g, f);
     let k1 = wedge(e, f) + wedge(h, g);
     let k0 = wedge(h, e);
@@ -197,7 +197,7 @@ fn inverse_bilinear(
         let ik2 = 0.5 / k2;
         let mut v = (-k1 - w) * ik2;
         let mut u = (h.x - f.x * v) / (e.x + g.x * v);
-        
+
         if u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0 {
             v = (-k1 + w) * ik2;
             u = (h.x - f.x * v) / (e.x + g.x * v);

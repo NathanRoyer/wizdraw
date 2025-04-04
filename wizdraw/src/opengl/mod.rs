@@ -8,7 +8,7 @@ use glow::{NativeShader, NativeTexture, NativeProgram, Framebuffer};
 
 use glow::{
     VERTEX_SHADER, FRAGMENT_SHADER, TEXTURE_2D, TEXTURE_MAG_FILTER, TEXTURE_MIN_FILTER,
-    NEAREST, RGBA, FRAMEBUFFER, BLEND, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DEPTH_TEST, FLOAT,
+    LINEAR, RGBA, FRAMEBUFFER, BLEND, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DEPTH_TEST, FLOAT,
     ARRAY_BUFFER, DYNAMIC_DRAW, RENDERBUFFER, RGB5_A1, COLOR_ATTACHMENT0, LINK_STATUS,
     FRAMEBUFFER_COMPLETE, COLOR_BUFFER_BIT, TRIANGLE_STRIP, TEXTURE0, TEXTURE1,
 };
@@ -77,29 +77,29 @@ impl Canvas for Es2Canvas {
 
     fn fill_bitmap(&mut self, bitmap: BitmapHandle, x: usize, y: usize, w: usize, h: usize, buf: &[Color]) {
         let tiles = &self.textures[bitmap.0].tiles;
-
-        let max_x = x + w;
-        let max_y = y + h;
+        let (max_x, max_y) = (x + w, y + h);
 
         for tile in tiles {
-            let tile_max_x = tile.offset.x + 256;
-            let tile_max_y = tile.offset.y + 256;
+            let tile_max = tile.offset + Vec2::new(256, 256);
 
-            let x_overlap = (x < tile_max_x) & (max_x >= tile.offset.x);
-            let y_overlap = (y < tile_max_y) & (max_y >= tile.offset.y);
+            let x_overlap = (x < tile_max.x) & (max_x >= tile.offset.x);
+            let y_overlap = (y < tile_max.y) & (max_y >= tile.offset.y);
 
             if !(x_overlap & y_overlap) {
                 continue;
             }
 
-            let x_full_coverage = (x <= tile.offset.x) & (max_x >= tile_max_x);
-            let y_full_coverage = (y <= tile.offset.y) & (max_y >= tile_max_y);
+            unsafe {
+                self.gl.active_texture(TEXTURE0);
+                self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
+            }
+
+            let x_full_coverage = (x <= tile.offset.x) & (max_x >= tile_max.x);
+            let y_full_coverage = (y <= tile.offset.y) & (max_y >= tile_max.y);
 
             if !(x_full_coverage & y_full_coverage) {
                 unsafe {
                     let dst = PixelPackData::Slice(Some(&mut self.tex_buf));
-                    self.gl.active_texture(TEXTURE0);
-                    self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
                     self.gl.get_tex_image(TEXTURE_2D, 0, RGBA, RGBA5551, dst);
                     let _ = self.gl.get_error();
                 }
@@ -107,8 +107,8 @@ impl Canvas for Es2Canvas {
 
             let x_start = x.max(tile.offset.x);
             let y_start = y.max(tile.offset.y);
-            let x_stop = max_x.min(tile_max_x);
-            let y_stop = max_y.min(tile_max_y);
+            let x_stop = max_x.min(tile_max.x);
+            let y_stop = max_y.min(tile_max.y);
 
             for tex_y in y_start..y_stop {
                 for tex_x in x_start..x_stop {
@@ -141,7 +141,7 @@ impl Canvas for Es2Canvas {
         unsafe {
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
             self.gl.viewport(0, 0, self.fb_size.x, self.fb_size.y);
-            self.gl.clear_color(0.0, 0.0, 0.0, 1.0);
+            self.gl.clear_color(0.0, 0.0, 0.0, 0.0);
             self.gl.clear(COLOR_BUFFER_BIT);
             debug(&self.gl, "clear");
         }
@@ -180,10 +180,10 @@ impl Canvas for Es2Canvas {
 fn into_rgba5551(color: Color) -> [u8; 2] {
     let color = color.map(u16::from);
     let mut word = 0u16;
-    word |= (color.r & 0xf8) << 11;
-    word |= (color.g & 0xf8) << 6;
-    word |= (color.b & 0xf8) << 1;
-    word |= color.a >> 7;
+    word |= (color.r & 0xf8) << 8;
+    word |= (color.g & 0xf8) << 3;
+    word |= (color.b & 0xf8) >> 2;
+    word |= (color.a > 200) as u16;
     word.to_le_bytes()
 }
 
@@ -203,8 +203,8 @@ unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
     let tex = gl.create_texture()?;
     gl.active_texture(TEXTURE0);
     gl.bind_texture(TEXTURE_2D, Some(tex));
-    gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MIN_FILTER, NEAREST as i32);
-    gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MAG_FILTER, NEAREST as i32);
+    gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR as i32);
+    gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR as i32);
 
     let side = 256;
     let level = 0;
@@ -415,13 +415,15 @@ impl Es2Canvas {
                 (3, param_1, [0.0; 4], Some(bitmap))
             },
             Texture::QuadBitmap {
-                top_left: _top_left,
-                btm_left: _btm_left,
-                top_right: _top_right,
-                btm_right: _btm_right,
-                bitmap: _bitmap,
+                top_left,
+                btm_left,
+                top_right,
+                btm_right,
+                bitmap,
             } => {
-                todo!()
+                let param_1 = [top_left.x, top_left.y, btm_left.x, btm_left.y];
+                let param_2 = [top_right.x, top_right.y, btm_right.x, btm_right.y];
+                (4, param_1, param_2, Some(bitmap))
             },
         };
 
@@ -445,6 +447,10 @@ impl Es2Canvas {
             let loc = self.gl.get_uniform_location(self.color_program, "param_1");
             self.gl.uniform_4_f32_slice(loc.as_ref(), &param_1);
             debug(&self.gl, "[color] param_1");
+
+            let loc = self.gl.get_uniform_location(self.color_program, "param_2");
+            self.gl.uniform_4_f32_slice(loc.as_ref(), &param_2);
+            debug(&self.gl, "[color] param_2");
 
             self.gl.active_texture(TEXTURE0);
             self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
