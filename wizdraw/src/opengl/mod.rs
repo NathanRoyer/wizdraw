@@ -1,5 +1,5 @@
 pub use super::*;
-use rgb::ComponentMap;
+use rgb::{ComponentMap, ComponentBytes};
 use core::array::from_fn;
 use core::mem::{swap, take};
 
@@ -14,6 +14,7 @@ use glow::{
 };
 
 use glow::UNSIGNED_SHORT_5_5_5_1 as RGBA5551;
+use glow::UNSIGNED_BYTE as RGBA8888;
 
 // todo
 // mod drm_kms;
@@ -37,7 +38,7 @@ pub struct Es2Canvas {
     render_fb: Framebuffer,
     mask_fb: Framebuffer,
     fb_size: Vec2<i32>,
-    tex_buf: Box<[u8]>,
+    tex_buf: Box<[Color]>,
     textures: Vec<TexData>,
 }
 
@@ -82,8 +83,8 @@ impl Canvas for Es2Canvas {
         for tile in tiles {
             let tile_max = tile.offset + Vec2::new(256, 256);
 
-            let x_overlap = (x < tile_max.x) & (max_x >= tile.offset.x);
-            let y_overlap = (y < tile_max.y) & (max_y >= tile.offset.y);
+            let x_overlap = (max_x >= tile.offset.x) & (x < tile_max.x);
+            let y_overlap = (max_y >= tile.offset.y) & (y < tile_max.y);
 
             if !(x_overlap & y_overlap) {
                 continue;
@@ -99,8 +100,9 @@ impl Canvas for Es2Canvas {
 
             if !(x_full_coverage & y_full_coverage) {
                 unsafe {
-                    let dst = PixelPackData::Slice(Some(&mut self.tex_buf));
-                    self.gl.get_tex_image(TEXTURE_2D, 0, RGBA, RGBA5551, dst);
+                    let bytes = self.tex_buf.as_bytes_mut();
+                    let dst = PixelPackData::Slice(Some(bytes));
+                    self.gl.get_tex_image(TEXTURE_2D, 0, RGBA, RGBA8888, dst);
                     let _ = self.gl.get_error();
                 }
             }
@@ -113,18 +115,19 @@ impl Canvas for Es2Canvas {
             for tex_y in y_start..y_stop {
                 for tex_x in x_start..x_stop {
                     let (dst_x, dst_y) = (tex_x - tile.offset.x, tex_y - tile.offset.y);
+                    let dst_i = dst_y * 256 + dst_x;
+
                     let (src_x, src_y) = (tex_x - x, tex_y - y);
-                    let src_color = buf[src_y * w + src_x];
-                    let [rg, gba] = into_rgba5551(src_color);
-                    let dst_index = (dst_y * 256 + dst_x) * 2;
-                    self.tex_buf[dst_index + 0] = rg;
-                    self.tex_buf[dst_index + 1] = gba;
+                    let src_i = src_y * w + src_x;
+
+                    self.tex_buf[dst_i] = buf[src_i]
                 }
             }
 
             unsafe {
-                let src = PixelUnpackData::Slice(Some(&self.tex_buf));
-                self.gl.tex_image_2d(TEXTURE_2D, 0, RGBA as i32, 256, 256, 0, RGBA, RGBA5551, src);
+                let src = PixelUnpackData::Slice(Some(self.tex_buf.as_bytes()));
+                self.gl.tex_image_2d(TEXTURE_2D, 0, RGBA as i32, 256, 256, 0, RGBA, RGBA8888, src);
+
                 debug(&self.gl, "tex_image_2d");
             }
         }
@@ -177,16 +180,6 @@ impl Canvas for Es2Canvas {
     }
 }
 
-fn into_rgba5551(color: Color) -> [u8; 2] {
-    let color = color.map(u16::from);
-    let mut word = 0u16;
-    word |= (color.r & 0xf8) << 8;
-    word |= (color.g & 0xf8) << 3;
-    word |= (color.b & 0xf8) >> 2;
-    word |= (color.a > 200) as u16;
-    word.to_le_bytes()
-}
-
 unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<NativeShader, String> {
     let shader = gl.create_shader(shader_type)?;
     gl.shader_source(shader, src);
@@ -220,7 +213,7 @@ unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
         side,
         border,
         format,
-        RGBA5551,
+        RGBA8888,
         data,
     );
 
@@ -325,7 +318,7 @@ impl Es2Canvas {
             // todo: check actual renderbuffer format
             // todo: maybe try OES_rgb8_rgba8 extension
 
-            let tex_buf = vec![0; 256 * 256 * 2].into();
+            let tex_buf = vec![Color::new(0, 0, 0, 0); 256 * 256].into();
 
             Ok(Self {
                 gl,

@@ -52,15 +52,15 @@ vec4 sample_tile(vec2 offset) {
     }
 
     offset = offset - bmp_tile_offset;
-    invalid_x = 0.0 > offset.x || offset.x > 255.0;
-    invalid_y = 0.0 > offset.y || offset.y > 255.0;
+    invalid_x = 0.0 > offset.x || offset.x > 256.0;
+    invalid_y = 0.0 > offset.y || offset.y > 256.0;
 
     if (invalid_x || invalid_y) {
         // out of bitmap tile bounds
         discard;
     }
 
-    offset = offset / 255.0;
+    offset = offset / 256.0;
     return texture2D(bmp_tile, offset);
 }
 
