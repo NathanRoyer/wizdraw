@@ -29,7 +29,7 @@ pub mod cpu;
 
 /// Implementations of [`Canvas`] using OpenGL ES 2.0
 #[cfg(feature = "gles2")]
-pub mod opengl;
+pub mod gles2;
 
 // const AABB_SAFE_MARGIN: f32 = 1.0;
 

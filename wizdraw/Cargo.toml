@@ -1,9 +1,9 @@
 [package]
 name = "wizdraw"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
-description = "Tiny no_std crate to fill and stroke composite bezier curves (SIMD/SSAA)"
+description = "Portable crate to fill and stroke composite bezier curves (paths)"
 license = "MIT"
 keywords = [ "vector-graphics", "render", "svg", "no_std", "simd" ]
 repository = "https://github.com/NathanRoyer/wizdraw"
@@ -27,3 +27,6 @@ std = []
 png = "0.17"
 khronos-egl = { version = "6.0", features = ["dynamic"] }
 libloading = "*"
+
+[package.metadata.docs.rs]
+features = [ "gles2" ]

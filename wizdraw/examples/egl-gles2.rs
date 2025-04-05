@@ -50,7 +50,7 @@ fn main() {
         })
     };
 
-    let mut canvas = wizdraw::opengl::Es2Canvas::init(gl, w as _, h as _).unwrap();
+    let mut canvas = wizdraw::gles2::Canvas::init(gl, w as _, h as _).unwrap();
 
     _benchmark::benchmark(&mut canvas, wf, hf);
 

@@ -1,4 +1,4 @@
-pub use super::*;
+use super::*;
 use rgb::{ComponentMap, ComponentBytes};
 use core::array::from_fn;
 use core::mem::{swap, take};
@@ -19,17 +19,17 @@ use glow::UNSIGNED_BYTE as RGBA8888;
 // todo
 // mod drm_kms;
 
-pub struct TexTile {
+struct TexTile {
     offset: Vec2<usize>,
     tex_id: NativeTexture,
 }
 
-pub struct TexData {
+struct TexData {
     tiles: Box<[TexTile]>,
     size: Vec2<i32>,
 }
 
-pub struct Es2Canvas {
+pub struct Canvas {
     gl: Context,
     mask_program: NativeProgram,
     color_program: NativeProgram,
@@ -42,7 +42,7 @@ pub struct Es2Canvas {
     textures: Vec<TexData>,
 }
 
-impl Canvas for Es2Canvas {
+impl super::Canvas for Canvas {
     fn framebuffer_size(&self) -> Vec2<usize> {
         self.fb_size.map(|n| n as _)
     }
@@ -230,7 +230,7 @@ unsafe fn init_program(gl: &Context, v_shader: &str, f_shader: &str) -> Result<N
     Ok(program)
 }
 
-impl Es2Canvas {
+impl Canvas {
     pub fn init(gl: Context, width: i32, height: i32) -> Result<Self, String> {
         let fb_size = Vec2::new(width, height);
 
