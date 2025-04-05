@@ -3,7 +3,7 @@ use wizdraw::{CubicBezier, Canvas, Color, Texture, Point, contour, SsaaConfig};
 
 use std::time::Instant;
 
-const GRID_PNG: &'static [u8] = include_bytes!("../../misc/discord-pp.png");
+const GRID_PNG: &'static [u8] = include_bytes!("../../misc/grid.png");
 
 fn read_grid_png() -> (usize, usize, Vec<u8>) {
     let decoder = png::Decoder::new(GRID_PNG);

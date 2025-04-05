@@ -90,45 +90,33 @@ impl Canvas for Es2Canvas {
                 continue;
             }
 
-            unsafe {
-                self.gl.active_texture(TEXTURE0);
-                self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
-            }
-
-            let x_full_coverage = (x <= tile.offset.x) & (max_x >= tile_max.x);
-            let y_full_coverage = (y <= tile.offset.y) & (max_y >= tile_max.y);
-
-            if !(x_full_coverage & y_full_coverage) {
-                unsafe {
-                    let bytes = self.tex_buf.as_bytes_mut();
-                    let dst = PixelPackData::Slice(Some(bytes));
-                    self.gl.get_tex_image(TEXTURE_2D, 0, RGBA, RGBA8888, dst);
-                    let _ = self.gl.get_error();
-                }
-            }
-
             let x_start = x.max(tile.offset.x);
             let y_start = y.max(tile.offset.y);
             let x_stop = max_x.min(tile_max.x);
             let y_stop = max_y.min(tile_max.y);
 
+            let mut i = 0;
             for tex_y in y_start..y_stop {
                 for tex_x in x_start..x_stop {
-                    let (dst_x, dst_y) = (tex_x - tile.offset.x, tex_y - tile.offset.y);
-                    let dst_i = dst_y * 256 + dst_x;
-
                     let (src_x, src_y) = (tex_x - x, tex_y - y);
                     let src_i = src_y * w + src_x;
 
-                    self.tex_buf[dst_i] = buf[src_i]
+                    self.tex_buf[i] = buf[src_i];
+                    i += 1;
                 }
             }
 
             unsafe {
-                let src = PixelUnpackData::Slice(Some(self.tex_buf.as_bytes()));
-                self.gl.tex_image_2d(TEXTURE_2D, 0, RGBA as i32, 256, 256, 0, RGBA, RGBA8888, src);
+                self.gl.active_texture(TEXTURE0);
+                self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
 
-                debug(&self.gl, "tex_image_2d");
+                let (x, y) = ((x_start % 256) as i32, (y_start % 256) as i32);
+                let (w, h) = ((x_stop - x_start) as i32, (y_stop - y_start) as i32);
+
+                let src = PixelUnpackData::Slice(Some(self.tex_buf.as_bytes()));
+                self.gl.tex_sub_image_2d(TEXTURE_2D, 0, x, y, w, h, RGBA, RGBA8888, src);
+
+                debug(&self.gl, "tex_sub_image_2d");
             }
         }
     }
@@ -199,24 +187,24 @@ unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
     gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR as i32);
     gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR as i32);
 
+    static TEX_BUF: [u8; 262144] = [0u8; 262144];
+
     let side = 256;
-    let level = 0;
-    let format = RGBA;
-    let border = 0;
-    let data = PixelUnpackData::Slice(None);
+    let data = PixelUnpackData::Slice(Some(&TEX_BUF));
 
     gl.tex_image_2d(
         TEXTURE_2D,
-        level,
-        format as i32,
+        0,
+        RGBA as i32,
         side,
         side,
-        border,
-        format,
+        0,
+        RGBA,
         RGBA8888,
         data,
     );
 
+    debug(&gl, "init_texture");
     Ok(tex)
 }
 

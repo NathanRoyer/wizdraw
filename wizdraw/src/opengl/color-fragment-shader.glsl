@@ -35,7 +35,7 @@ vec4 rainbow(vec2 point) {
     rainbow[4] = vec4(  0,   0, 255, 255);
     rainbow[5] = vec4( 75,   0, 130, 255);
     rainbow[6] = vec4(148,   0, 211, 255);
-    rainbow[7] = vec4(255, 255, 255,   0);
+    rainbow[7] = vec4( 50,  50,  50, 255);
 
     float p = (point.x + point.y) / 16.0;
     int i = int(mod(p, 8.0));

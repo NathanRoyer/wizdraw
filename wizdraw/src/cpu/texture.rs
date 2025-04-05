@@ -54,7 +54,7 @@ pub fn rainbow(point: Point) -> Color16 {
         Color16::new(  0,   0, 255, 255),
         Color16::new( 75,   0, 130, 255),
         Color16::new(148,   0, 211, 255),
-        Color16::new(255, 255, 255, 100),
+        Color16::new( 50,  50,  50, 255),
     ];
 
     let point = point.map(|f| f as usize);
