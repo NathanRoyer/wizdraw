@@ -1,27 +1,28 @@
-use super::*;
-use rgb::{ComponentMap, ComponentBytes};
+use rgb::{ComponentMap, ComponentSlice};
 use core::array::from_fn;
 use core::mem::{swap, take};
 
 use glow::{Context, HasContext, PixelUnpackData, PixelPackData};
-use glow::{NativeShader, NativeTexture, NativeProgram, Framebuffer};
+use glow::{Shader, Texture as GlTexture, Program, Framebuffer};
 
 use glow::{
     VERTEX_SHADER, FRAGMENT_SHADER, TEXTURE_2D, TEXTURE_MAG_FILTER, TEXTURE_MIN_FILTER,
     LINEAR, RGBA, FRAMEBUFFER, BLEND, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DEPTH_TEST, FLOAT,
-    ARRAY_BUFFER, DYNAMIC_DRAW, RENDERBUFFER, RGB5_A1, COLOR_ATTACHMENT0, LINK_STATUS,
-    FRAMEBUFFER_COMPLETE, COLOR_BUFFER_BIT, TRIANGLE_STRIP, TEXTURE0, TEXTURE1,
+    ARRAY_BUFFER, COLOR_BUFFER_BIT, RENDERBUFFER, RGBA8, COLOR_ATTACHMENT0, DYNAMIC_DRAW,
+    FRAMEBUFFER_COMPLETE, TRIANGLE_STRIP, TEXTURE0, TEXTURE1,
 };
 
 use glow::UNSIGNED_SHORT_5_5_5_1 as RGBA5551;
 use glow::UNSIGNED_BYTE as RGBA8888;
+
+use super::*;
 
 // todo
 // mod drm_kms;
 
 struct TexTile {
     offset: Vec2<usize>,
-    tex_id: NativeTexture,
+    tex_id: GlTexture,
 }
 
 struct TexData {
@@ -31,14 +32,14 @@ struct TexData {
 
 pub struct Canvas {
     gl: Context,
-    mask_program: NativeProgram,
-    color_program: NativeProgram,
-    mask_src: NativeTexture,
-    mask_dst: NativeTexture,
-    render_fb: Framebuffer,
+    mask_program: Program,
+    color_program: Program,
+    mask_src: GlTexture,
+    mask_dst: GlTexture,
+    render_fb: Option<Framebuffer>,
     mask_fb: Framebuffer,
     fb_size: Vec2<i32>,
-    tex_buf: Box<[Color]>,
+    color_buf: Vec<Color>,
     textures: Vec<TexData>,
 }
 
@@ -80,6 +81,8 @@ impl super::Canvas for Canvas {
         let tiles = &self.textures[bitmap.0].tiles;
         let (max_x, max_y) = (x + w, y + h);
 
+        self.color_buf.resize(256 * 256, Color::default());
+
         for tile in tiles {
             let tile_max = tile.offset + Vec2::new(256, 256);
 
@@ -101,7 +104,7 @@ impl super::Canvas for Canvas {
                     let (src_x, src_y) = (tex_x - x, tex_y - y);
                     let src_i = src_y * w + src_x;
 
-                    self.tex_buf[i] = buf[src_i];
+                    self.color_buf[i] = buf[src_i];
                     i += 1;
                 }
             }
@@ -113,7 +116,8 @@ impl super::Canvas for Canvas {
                 let (x, y) = ((x_start % 256) as i32, (y_start % 256) as i32);
                 let (w, h) = ((x_stop - x_start) as i32, (y_stop - y_start) as i32);
 
-                let src = PixelUnpackData::Slice(Some(self.tex_buf.as_bytes()));
+                let src = ComponentSlice::as_slice(&*self.color_buf);
+                let src = PixelUnpackData::Slice(Some(src));
                 self.gl.tex_sub_image_2d(TEXTURE_2D, 0, x, y, w, h, RGBA, RGBA8888, src);
 
                 debug(&self.gl, "tex_sub_image_2d");
@@ -130,7 +134,7 @@ impl super::Canvas for Canvas {
 
     fn clear(&mut self) {
         unsafe {
-            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
+            self.gl.bind_framebuffer(FRAMEBUFFER, self.render_fb);
             self.gl.viewport(0, 0, self.fb_size.x, self.fb_size.y);
             self.gl.clear_color(0.0, 0.0, 0.0, 0.0);
             self.gl.clear(COLOR_BUFFER_BIT);
@@ -145,13 +149,18 @@ impl super::Canvas for Canvas {
             shape_aabb = shape_aabb.union(curve.aabb());
         }
 
+        // vertical flip
+        let height = self.fb_size.y as f32;
+        shape_aabb.min.y = height - shape_aabb.min.y;
+        shape_aabb.max.y = height - shape_aabb.max.y;
+
         for y in (0..self.fb_size.y).step_by(256) {
             for x in (0..self.fb_size.x).step_by(256) {
                 let (x_f32, y_f32) = (x as f32, y as f32);
                 let (tile_max_x, tile_max_y) = (x_f32 + 256.0, y_f32 + 256.0);
 
                 let x_overlap = (shape_aabb.min.x < tile_max_x) & (shape_aabb.max.x >= x_f32);
-                let y_overlap = (shape_aabb.min.y < tile_max_y) & (shape_aabb.max.y >= y_f32);
+                let y_overlap = (shape_aabb.max.y < tile_max_y) & (shape_aabb.min.y >= y_f32);
 
                 if !(x_overlap & y_overlap) {
                     continue;
@@ -168,7 +177,7 @@ impl super::Canvas for Canvas {
     }
 }
 
-unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<NativeShader, String> {
+unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<Shader, String> {
     let shader = gl.create_shader(shader_type)?;
     gl.shader_source(shader, src);
     gl.compile_shader(shader);
@@ -180,7 +189,7 @@ unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<Nativ
     }
 }
 
-unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
+unsafe fn init_texture(gl: &Context) -> Result<GlTexture, String> {
     let tex = gl.create_texture()?;
     gl.active_texture(TEXTURE0);
     gl.bind_texture(TEXTURE_2D, Some(tex));
@@ -208,40 +217,48 @@ unsafe fn init_texture(gl: &Context) -> Result<NativeTexture, String> {
     Ok(tex)
 }
 
-unsafe fn init_program(gl: &Context, v_shader: &str, f_shader: &str) -> Result<NativeProgram, String> {
-    let program = gl.create_program()?;
+unsafe fn init_program(gl: &Context, v_shader: &str, f_shader: &str, name: &str) -> Result<Program, String> {
     let vertex_shader = init_shader(&gl, VERTEX_SHADER, v_shader)?;
     let fragment_shader = init_shader(&gl, FRAGMENT_SHADER, f_shader)?;
+
+    let program = gl.create_program()?;
     gl.attach_shader(program, vertex_shader);
     gl.attach_shader(program, fragment_shader);
-
     gl.link_program(program);
     gl.validate_program(program);
+
     let warning = gl.get_program_info_log(program);
     if !warning.is_empty() {
-        return Err(format!("Compilation Warning: {}", warning));
+        return Err(format!("Compilation Warning: {} ({name})", warning));
     }
 
-    if gl.get_program_parameter_i32(program, LINK_STATUS) == 0 {
-        gl.delete_program(program);
-        return Err(format!("Linkage Error"));
+    /*if !gl.get_program_completion_status(program) {
+        return Err(format!("Incomplete Program ({name})"));
+    }*/
+
+    if !gl.get_program_validate_status(program) {
+        return Err(format!("Validation Error ({name})"));
+    }
+
+    if !gl.get_program_link_status(program) {
+        return Err(format!("Linkage Error ({name})"));
     }
 
     Ok(program)
 }
 
 impl Canvas {
-    pub fn init(gl: Context, width: i32, height: i32) -> Result<Self, String> {
+    pub fn init(gl: Context, width: i32, height: i32, offscreen: bool) -> Result<Self, String> {
         let fb_size = Vec2::new(width, height);
 
         unsafe {
             let v_shader = include_str!("mask-vertex-shader.glsl");
             let f_shader = include_str!("mask-fragment-shader.glsl");
-            let mask_program = init_program(&gl, v_shader, f_shader)?;
+            let mask_program = init_program(&gl, v_shader, f_shader, "mask")?;
 
             let v_shader = include_str!("color-vertex-shader.glsl");
             let f_shader = include_str!("color-fragment-shader.glsl");
-            let color_program = init_program(&gl, v_shader, f_shader)?;
+            let color_program = init_program(&gl, v_shader, f_shader, "color")?;
 
             gl.use_program(Some(color_program));
             let loc = gl.get_uniform_location(color_program, "opacity");
@@ -284,29 +301,35 @@ impl Canvas {
             gl.disable(DEPTH_TEST);
             gl.depth_mask(false);
 
-            let render_fb = gl.create_framebuffer()?;
-            let render_buffer = gl.create_renderbuffer()?;
+            let mut render_fb = None;
 
-            // allocate renderbuffer storage
-            gl.bind_renderbuffer(RENDERBUFFER, Some(render_buffer));
-            gl.renderbuffer_storage(RENDERBUFFER, RGB5_A1, fb_size.x, fb_size.y);
+            if offscreen {
+                render_fb = Some(gl.create_framebuffer()?);
+                let render_buffer = gl.create_renderbuffer()?;
 
-            // bind framebuffer and renderbuffer
-            gl.bind_framebuffer(FRAMEBUFFER, Some(render_fb));
-            gl.framebuffer_renderbuffer(FRAMEBUFFER, COLOR_ATTACHMENT0, RENDERBUFFER, Some(render_buffer));
+                // allocate renderbuffer storage
+                gl.bind_renderbuffer(RENDERBUFFER, Some(render_buffer));
+                gl.renderbuffer_storage(RENDERBUFFER, RGBA8, fb_size.x, fb_size.y);
+                debug(&gl, "fb storage");
 
-            let status = gl.check_framebuffer_status(FRAMEBUFFER);
-            if status != FRAMEBUFFER_COMPLETE {
-                return Err(format!("Failed to create render buffer: status = {status}"));
+                // bind framebuffer and renderbuffer
+                gl.bind_framebuffer(FRAMEBUFFER, render_fb);
+                gl.framebuffer_renderbuffer(FRAMEBUFFER, COLOR_ATTACHMENT0, RENDERBUFFER, Some(render_buffer));
+
+                let status = gl.check_framebuffer_status(FRAMEBUFFER);
+                if status != FRAMEBUFFER_COMPLETE {
+                    return Err(format!("Failed to create render buffer: status = {status}"));
+                }
+
+                gl.bind_framebuffer(FRAMEBUFFER, None);
             }
 
-            gl.bind_framebuffer(FRAMEBUFFER, None);
             debug(&gl, "init");
 
             // todo: check actual renderbuffer format
             // todo: maybe try OES_rgb8_rgba8 extension
 
-            let tex_buf = vec![Color::new(0, 0, 0, 0); 256 * 256].into();
+            let color_buf = vec![Color::new(0, 0, 0, 0); 256 * 256].into();
 
             Ok(Self {
                 gl,
@@ -317,7 +340,7 @@ impl Canvas {
                 render_fb,
                 mask_fb,
                 fb_size,
-                tex_buf,
+                color_buf,
                 textures: Vec::new(),
             })
         }
@@ -435,7 +458,7 @@ impl Canvas {
 
             self.gl.active_texture(TEXTURE0);
             self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
-            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
+            self.gl.bind_framebuffer(FRAMEBUFFER, self.render_fb);
                 debug(&self.gl, "[color] framebuffer_texture_2d");
 
             self.gl.viewport(x, y, 256, 256);
@@ -472,20 +495,49 @@ impl Canvas {
         }
     }
 
-    pub fn read_rgba5551(&self, pixels: &mut [u8]) {
-        assert_eq!((self.fb_size.x * self.fb_size.y * 2) as usize, pixels.len());
+    fn read_fb(&self, pixels: &mut [u8], fmt: u32) {
         unsafe {
             self.gl.flush();
             self.gl.finish();
             debug(&self.gl, "finish");
 
-            self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.render_fb));
+            self.gl.bind_framebuffer(FRAMEBUFFER, self.render_fb);
             let data = PixelPackData::Slice(Some(pixels));
             self.gl.read_buffer(COLOR_ATTACHMENT0);
             debug(&self.gl, "read_buffer");
 
-            self.gl.read_pixels(0, 0, self.fb_size.x, self.fb_size.y, RGBA, RGBA5551, data);
+            self.gl.read_pixels(0, 0, self.fb_size.x, self.fb_size.y, RGBA, fmt, data);
             debug(&self.gl, "read_pixels");
+        }
+    }
+
+    pub fn read_rgba5551(&self, pixels: &mut [u8]) {
+        assert_eq!((self.fb_size.x * self.fb_size.y * 2) as usize, pixels.len());
+        self.read_fb(pixels, RGBA5551);
+    }
+
+    /// Read all pixels of the framebuffer as `RGBA8888`
+    pub fn read(&self, pixels: &mut [Color]) {
+        assert_eq!((self.fb_size.x * self.fb_size.y) as usize, pixels.len());
+        self.read_fb(pixels.as_mut_slice(), RGBA8888);
+    }
+
+    /// Read all pixels of the framebuffer and apply a vertical flip
+    pub fn read_and_flip(&mut self, pixels: &mut [Color]) {
+        self.read(pixels);
+
+        // vertical flip
+        let w = self.fb_size.x as usize;
+        let h = self.fb_size.y as usize;
+        self.color_buf.resize(w, Color::default());
+        for src_y in 0..(h / 2) {
+            let dst_y = h - src_y - 1;
+            let dst_s = dst_y * w;
+            let src_s = src_y * w;
+            let src_e = src_s + w;
+            self.color_buf.copy_from_slice(&pixels[dst_s..][..w]);
+            pixels.copy_within(src_s..src_e, dst_s);
+            pixels[src_s..src_e].copy_from_slice(&self.color_buf);
         }
     }
 }

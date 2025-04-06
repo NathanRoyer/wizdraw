@@ -1,4 +1,6 @@
+use rgb::ComponentSlice;
 use std::io::BufWriter;
+use wizdraw::Color;
 use std::fs::File;
 
 use khronos_egl as egl;
@@ -50,24 +52,12 @@ fn main() {
         })
     };
 
-    let mut canvas = wizdraw::gles2::Canvas::init(gl, w as _, h as _).unwrap();
+    let mut canvas = wizdraw::gles2::Canvas::init(gl, w as _, h as _, true).unwrap();
 
     _benchmark::benchmark(&mut canvas, wf, hf);
 
-    let mut rgba5551 = vec![0; 2 * w * h];
-    canvas.read_rgba5551(&mut rgba5551);
-
-    let mut rgba = Vec::new();
-
-    for chunk in rgba5551.chunks_exact(2) {
-        if let [rg, gba] = chunk {
-            let word = u16::from_le_bytes([*rg, *gba]);
-            rgba.push(((word >> 8) & 0xf8) as u8);
-            rgba.push(((word >> 3) & 0xf8) as u8);
-            rgba.push(((word << 2) & 0xf8) as u8);
-            rgba.push((word as u8 & 1) * 255);
-        }
-    }
+    let mut rgba = vec![Color::default(); w * h];
+    canvas.read_and_flip(&mut rgba);
 
     // converting to a PNG image
     let file = File::create("output.png").unwrap();
@@ -76,6 +66,7 @@ fn main() {
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
-    writer.write_image_data(&rgba).unwrap();
+    let rgba = ComponentSlice::as_slice(&*rgba);
+    writer.write_image_data(rgba).unwrap();
 }
 

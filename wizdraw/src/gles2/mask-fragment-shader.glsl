@@ -117,7 +117,8 @@ void main() {
 
     float trial = 1.0;
 
-    for (int i = 0; i < 1024; i++) {
+    // this is a pseudo infinite loop
+    for (int i = 0; i < 4096; i++) {
         split_curve(curve, trial, trial_sc, future_sc);
         bool no_overlap = !aabb_overlap(win_pos, trial_sc);
         bool use_as_is = no_overlap || is_curve_straight(trial_sc);

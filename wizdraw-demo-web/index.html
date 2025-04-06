@@ -20,36 +20,41 @@ canvas {
     z-index: 0;
 }
 
-h3 {
-    position: absolute;
-    top: 0; left: 0;
-    z-index: 1;
-    margin: 1em;
-}
+.hide { display: none; }
         </style>
     </head>
     <body>
-        <canvas id="canvas"></canvas>
+        <canvas id="cpu-canvas"></canvas>
+        <canvas id="gpu-canvas"></canvas>
         <script type="module">
             import init, { frame } from './wizdraw_demo_web.js';
 
             let running = true;
+            let cpu = true;
             let x = 0.0;
             let y = 0.0;
 
             let samples = [];
 
             function update_frame() {
+                let cpu_canvas = document.getElementById('cpu-canvas');
+                let gpu_canvas = document.getElementById('gpu-canvas');
+
                 if (running) {
+                    (cpu ? gpu_canvas : cpu_canvas).classList.add('hide');
+                    (cpu ? cpu_canvas : gpu_canvas).classList.remove('hide');
+
                     let startTime = performance.now();
-                    frame(x, y);
+                    frame(x, y, cpu);
                     let endTime = performance.now();
                     let fps = 1000 / (endTime - startTime);
                     samples.push(fps);
 
                     if (samples.length >= 10) {
-                        let avg_fps = samples.reduce((a, b) => a + b) / samples.length;
-                        document.title = Math.round(avg_fps).toString() + ' FPS (MAX 60)';
+                        let renderer = cpu ? "CPU" : "GPU";
+                        let fps_sum = samples.reduce((a, b) => a + b);
+                        let avg_fps = Math.round(fps_sum / samples.length);
+                        document.title = avg_fps.toString() + ' FPS (' + renderer + ')';
                         samples = [];
                     }
                 }
@@ -60,7 +65,7 @@ h3 {
             async function run() {
                 await init();
 
-                document.body.addEventListener('click', () => running = !running);
+                document.body.addEventListener('click', () => cpu = !cpu);
                 document.body.addEventListener('mousemove', e => {
                     x = e.clientX;
                     y = e.clientY;

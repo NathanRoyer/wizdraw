@@ -26,20 +26,20 @@ uniform vec4 param_1;
 uniform vec4 param_2;
 
 vec4 rainbow(vec2 point) {
-    vec4 rainbow[8];
-
-    rainbow[0] = vec4(255,   0,   0, 255);
-    rainbow[1] = vec4(255, 127,   0, 255);
-    rainbow[2] = vec4(255, 255,   0, 255);
-    rainbow[3] = vec4(  0, 255,   0, 255);
-    rainbow[4] = vec4(  0,   0, 255, 255);
-    rainbow[5] = vec4( 75,   0, 130, 255);
-    rainbow[6] = vec4(148,   0, 211, 255);
-    rainbow[7] = vec4( 50,  50,  50, 255);
-
     float p = (point.x + point.y) / 16.0;
     int i = int(mod(p, 8.0));
-    return rainbow[i] / 255.0;
+    vec4 color;
+
+    /**/ if (i == 0) color = vec4(255,   0,   0, 255);
+    else if (i == 1) color = vec4(255, 127,   0, 255);
+    else if (i == 2) color = vec4(255, 255,   0, 255);
+    else if (i == 3) color = vec4(  0, 255,   0, 255);
+    else if (i == 4) color = vec4(  0,   0, 255, 255);
+    else if (i == 5) color = vec4( 75,   0, 130, 255);
+    else if (i == 6) color = vec4(148,   0, 211, 255);
+    else             color = vec4( 50,  50,  50, 255);
+
+    return color / 255.0;
 }
 
 vec4 sample_tile(vec2 offset) {
@@ -69,6 +69,11 @@ float wedge(vec2 a, vec2 b) {
 }
 
 void main() {
+    vec2 win_pos = gl_FragCoord.xy;
+
+    // texture vertical flip
+    win_pos.y = height - win_pos.y;
+
     vec2 pos = (gl_FragCoord.xy - offset) / vec2(256.0, 256.0);
 
     vec4 rgba = vec4(0);
@@ -96,7 +101,7 @@ void main() {
 
         vec2 scaled_size = bmp_size * scale;
 
-        vec2 offset = gl_FragCoord.xy - top_left;
+        vec2 offset = win_pos - top_left;
         if (repeat) offset = mod(offset, scaled_size);
 
         offset = offset / scale;
@@ -112,12 +117,11 @@ void main() {
         vec2 bl = param_1.zw;
         vec2 tr = param_2.xy;
         vec2 br = param_2.zw;
-        vec2 pt = gl_FragCoord.xy;
 
         vec2 e = tr - tl;
         vec2 f = bl - tl;
         vec2 g = tl - tr + br - bl;
-        vec2 h = pt - tl;
+        vec2 h = win_pos - tl;
 
         float k2 = wedge(g, f);
         float k1 = wedge(e, f) + wedge(h, g);
@@ -156,6 +160,6 @@ void main() {
 
     } else {
         // debug / gradient
-        gl_FragColor = rainbow(gl_FragCoord.xy);
+        gl_FragColor = rainbow(win_pos);
     }
 }
