@@ -1,4 +1,4 @@
-use rgb::{ComponentMap, ComponentSlice};
+use rgb::ComponentMap;
 use core::array::from_fn;
 use core::mem::{swap, take};
 
@@ -116,7 +116,7 @@ impl super::Canvas for Canvas {
                 let (x, y) = ((x_start % 256) as i32, (y_start % 256) as i32);
                 let (w, h) = ((x_stop - x_start) as i32, (y_stop - y_start) as i32);
 
-                let src = ComponentSlice::as_slice(&*self.color_buf);
+                let src = rgb::bytemuck::cast_slice(&*self.color_buf);
                 let src = PixelUnpackData::Slice(Some(src));
                 self.gl.tex_sub_image_2d(TEXTURE_2D, 0, x, y, w, h, RGBA, RGBA8888, src);
 
@@ -519,7 +519,8 @@ impl Canvas {
     /// Read all pixels of the framebuffer as `RGBA8888`
     pub fn read(&self, pixels: &mut [Color]) {
         assert_eq!((self.fb_size.x * self.fb_size.y) as usize, pixels.len());
-        self.read_fb(pixels.as_mut_slice(), RGBA8888);
+        let pixels = rgb::bytemuck::cast_slice_mut(pixels);
+        self.read_fb(pixels, RGBA8888);
     }
 
     /// Read all pixels of the framebuffer and apply a vertical flip

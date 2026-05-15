@@ -1,6 +1,6 @@
 use wasm_bindgen::{prelude::*, Clamped};
 use web_sys::ImageData;
-use wizdraw::rgb::{AsPixels, ComponentSlice};
+use wizdraw::rgb::AsPixels;
 use wizdraw::vek::Vec2;
 use wizdraw::*;
 use std::sync::Mutex;
@@ -133,7 +133,8 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     wiz.fill_cbc(&quad, &texture, SsaaConfig::None);
 
     if cpu {
-        let data = Clamped(state.cpu.pixels().as_slice());
+        let pixels = state.cpu.pixels();
+        let data = Clamped(rgb::bytemuck::cast_slice(pixels));
         let image_data = ImageData::new_with_u8_clamped_array_and_sh(data, w, h)?;
 
         let context = canvas

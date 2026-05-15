@@ -153,14 +153,11 @@ pub trait Canvas {
 
 #[inline(always)]
 fn travel(a: Point, b: Point, t: f32) -> Point {
-    Point {
-        x: a.x + (b.x - a.x) * t,
-        y: a.y + (b.y - a.y) * t,
-    }
+    Point::lerp_unclamped(a, b, t)
 }
 
 impl CubicBezier {
-    fn split(self, t: f32) -> (Self, Self) {
+    pub fn split(self, t: f32) -> (Self, Self) {
         let side1 = travel(self.c1, self.c2, t);
         let side2 = travel(self.c2, self.c3, t);
         let side3 = travel(self.c3, self.c4, t);

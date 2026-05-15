@@ -11,7 +11,7 @@ path = "lib.rs"
 wizdraw = { path = "../wizdraw", features = [ "gles2" ] }
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
-glow = "0.16"
+glow = "0.17"
 png = "0.17"
 
 [dependencies.web-sys]
@@ -22,6 +22,7 @@ features = [
     'HtmlElement',
     'HtmlCanvasElement',
     'CanvasRenderingContext2d',
+    'WebGlRenderingContext',
     'ImageData',
     'Node',
     'Window',

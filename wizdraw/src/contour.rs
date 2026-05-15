@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 const DEG_90: f32 = core::f32::consts::PI * 0.5;
 
 impl CubicBezier {
-    fn reversed(self, actually: bool) -> Self {
+    fn reversed(&self, actually: bool) -> Self {
         match actually {
             true => CubicBezier {
                 c1: self.c4,
@@ -12,7 +12,7 @@ impl CubicBezier {
                 c3: self.c2,
                 c4: self.c1,
             },
-            false => self,
+            false => *self,
         }
     }
 
@@ -113,11 +113,15 @@ pub fn contour(shape: &[CubicBezier], width: f32, output: &mut Vec<CubicBezier>,
         // make room for end connectors
         output.push(Default::default());
 
-        let get_curve = |i| match side {
-            0 => shape.get(i),
-            1 => shape.get(shape.len().overflowing_sub(i + 1).0),
-            _ => unreachable!(),
-        }.cloned().map(|c: CubicBezier| c.reversed(side == 1));
+        let get_curve = |i| {
+            let i = match side {
+                0 => i,
+                1 => shape.len().overflowing_sub(i + 1).0,
+                _ => unreachable!(),
+            };
+
+            shape.get(i).map(|c| c.reversed(side == 1))
+        };
 
         let mut previous: Option<CubicBezier> = None;
         let mut curve_index = 0;

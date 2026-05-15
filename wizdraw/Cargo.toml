@@ -10,9 +10,9 @@ repository = "https://github.com/NathanRoyer/wizdraw"
 categories = [ "rendering", "no-std" ]
 
 [dependencies]
-vek = { version = "0.17", default-features = false, features = ["libm"] }
-glow = { version = "0.16", optional = true }
-rgb = { version = "0.8" }
+vek = { version = "0.17", default-features = false, features = [ "libm" ] }
+glow = { version = "0.17", optional = true }
+rgb = { version = "0.8", features = [ "bytemuck" ] }
 
 [features]
 default = [ "contour", "shapes" ]
