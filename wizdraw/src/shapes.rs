@@ -24,7 +24,10 @@ fn segment(s: Point, e: Point) -> Segment {
 
 impl Segment {
     fn unit(self) -> Vec2<f32> {
-        normalize_or_zero(self.e, self.s)
+        match self.e == self.s {
+            true => Vec2::new(0.0, 0.0),
+            false => (self.e - self.s).normalized(),
+        }
     }
 }
 
