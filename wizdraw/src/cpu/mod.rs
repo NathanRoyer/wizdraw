@@ -180,8 +180,6 @@ impl PathImpl<'_> {
 #[derive(Copy, Clone, Debug)]
 struct Collision {
     offset: f32,
-    #[allow(unused)]
-    downward: bool,
 }
 
 type Collisions = [Option<Collision>; 2];
@@ -205,9 +203,9 @@ fn segment_collision(row: f32, segment: &Segment) -> Collisions {
     }
 
     let offset = a.x + (b.x - a.x) * t;
-    let downward = b.y > a.y;
+    // let downward = b.y > a.y;
 
-    [Some(Collision { offset, downward }), None]
+    [Some(Collision { offset }), None]
 }
 
 fn arc_collision(row: f32, arc: &Arc, data: &ArcData) -> Collisions {
@@ -248,15 +246,15 @@ fn arc_collision(row: f32, arc: &Arc, data: &ArcData) -> Collisions {
     let mut r_collision = None;
 
     if l_col {
-        let downward = !arc.clockwise;
+        // let downward = !arc.clockwise;
         let offset = arc.center.x + l_cos * arc.radius;
-        l_collision = Some(Collision { offset, downward });
+        l_collision = Some(Collision { offset });
     }
 
     if r_col {
-        let downward = arc.clockwise;
+        // let downward = arc.clockwise;
         let offset = arc.center.x + r_cos * arc.radius;
-        r_collision = Some(Collision { offset, downward });
+        r_collision = Some(Collision { offset });
     }
 
     [l_collision, r_collision]
