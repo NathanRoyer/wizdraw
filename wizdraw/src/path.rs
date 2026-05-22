@@ -313,8 +313,6 @@ impl Path {
             let p2 = sample(p2_t);
             let p3 = sample(p3_t);
 
-            if p3.distance_squared(p1)
-
             let Some(arc) = Arc::from_points([p1, p2, p3]) else {
                 self.segment(&Segment { a: p1, b: p3 });
                 p1 = p3;
