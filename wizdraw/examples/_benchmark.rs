@@ -1,5 +1,5 @@
 use rgb::AsPixels;
-use wizdraw::{CubicBezier, Canvas, Color, Texture, Point, contour, SsaaConfig};
+use wizdraw::{Canvas, Color, Texture, Point, Path, Shape, SsaaConfig};
 
 use std::time::Instant;
 
@@ -15,28 +15,27 @@ fn read_grid_png() -> (usize, usize, Vec<u8>) {
 }
 
 pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
-    let path = [
-        CubicBezier {
-            c1: Point::new(0.250 * wf, 0.500 * hf),
-            c2: Point::new(0.250 * wf, 0.100 * hf),
-            c3: Point::new(0.750 * wf, 0.100 * hf),
-            c4: Point::new(0.750 * wf, 0.500 * hf),
-        },
-        CubicBezier {
-            c1: Point::new(0.750 * wf, 0.500 * hf),
-            c2: Point::new(0.750 * wf, 0.900 * hf),
-            c3: Point::new(0.250 * wf, 0.900 * hf),
-            c4: Point::new(0.250 * wf, 0.500 * hf),
-        },
-    ];
+    let mut path = Path::default();
+    let max_error = 1.0;
+
+    path.cubic_bezier([
+        Point::new(0.250 * wf, 0.500 * hf),
+        Point::new(0.250 * wf, 0.100 * hf),
+        Point::new(0.750 * wf, 0.100 * hf),
+        Point::new(0.750 * wf, 0.500 * hf),
+    ], max_error);
+
+    path.cubic_bezier([
+        Point::new(0.750 * wf, 0.500 * hf),
+        Point::new(0.750 * wf, 0.900 * hf),
+        Point::new(0.250 * wf, 0.900 * hf),
+        Point::new(0.250 * wf, 0.500 * hf),
+    ], max_error);
 
     let (tex_w, tex_h, tex_p) = read_grid_png();
 
-    let mut line = Vec::new();
-    contour(path.as_slice(), 5.0, &mut line, 0.5);
-
     let green = Color::new(100, 200, 150, 255);
-    let contour = Texture::SolidColor(green);
+    let _green = Texture::SolidColor(green);
 
     for ssaa in [SsaaConfig::None, SsaaConfig::X2, SsaaConfig::X4] {
         canvas.clear();
@@ -56,9 +55,11 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
             let then = Instant::now();
             let num = 20;
             for _ in 0..num {
-                canvas.fill_cbc(&path, &Texture::Debug, ssaa);
-                canvas.fill_cbc(&path, &texture, ssaa);
-                canvas.fill_cbc(&line, &contour, ssaa);
+                canvas.draw(&path, &Texture::Debug, ssaa);
+                canvas.draw(&path, &texture, ssaa);
+
+                let path = path.strike(4.0);
+                canvas.draw(&path, &_green, ssaa);
             }
             let avg_ms = then.elapsed().as_micros() / num;
             let fps = 1000000 / avg_ms;

@@ -1,93 +1,75 @@
 #version 100
 precision highp float;
 const float TEXTURE_SIZE = 256.0;
-const float epsilon = 0.0001;
-const float straight_threshold = 0.8;
+const float PI = 3.1415926538;
 
 uniform sampler2D prev_iteration;
 uniform float height;
 uniform vec2 offset;
-uniform int init;
+uniform int blank;
 
-// [c1x, c1y, c2x, c2y, c3x, c3y, c4x, c4y]
-uniform float input_curve[8];
+// [0.0, a.x, a.y, b.x, b.y] => segment
+// [radius, c.x, c.y, start_angle, stop_angle] => counterclockwise arc
+// [-radius, c.x, c.y, start_angle, stop_angle] => clockwise arc
+uniform float input_buf[80];
+uniform int input_len;
 
-bool use_segment_for_pip(vec2 p, vec2 s, vec2 e) {
-    vec2 v1 = p - s;
-    vec2 v2 = e - s;
-    float d = v1.x * v2.y - v1.y * v2.x;
+bool segment(vec2 pos, float a_x, float a_y, float b_x, float b_y) {
+    if (a_y == b_y) {
+        return false;
+    }
 
-    bool b1 = s.y <= p.y;
-    bool b2 = e.y > p.y;
-    bool b3 = d > epsilon;
+    float t = (a_y - pos.y) / (a_y - b_y);
 
-    bool dec = ( b1) && ( b2) && ( b3);
-    bool inc = (!b1) && (!b2) && (!b3);
+    if (t < 0.0 || t > 1.0) {
+        return false;
+    }
 
-    return (int(inc) - int(dec)) != 0;
+    float offset = a_x + (b_x - a_x) * t;
+    return pos.x < offset;
 }
 
-bool is_curve_straight(vec2 curve[4]) {
-    // https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points
-
-    vec2 c1_to_c4 = curve[3] - curve[0];
-    float dot_c1_to_c4 = inversesqrt(c1_to_c4.x * c1_to_c4.x + c1_to_c4.y * c1_to_c4.y);
-
-    vec2 c2_to_c1 = curve[0] - curve[1];
-    float a_c2 = c1_to_c4.x * c2_to_c1.y;
-    float b_c2 = c1_to_c4.y * c2_to_c1.x;
-    float d_c2 = abs(a_c2 - b_c2) * dot_c1_to_c4;
-
-    vec2 c3_to_c1 = curve[0] - curve[2];
-    float a_c3 = c1_to_c4.x * c3_to_c1.y;
-    float b_c3 = c1_to_c4.y * c3_to_c1.x;
-    float d_c3 = abs(a_c3 - b_c3) * dot_c1_to_c4;
-
-    // distance from point to projected point
-    bool c2_close_enough = d_c2 < straight_threshold;
-    bool c3_close_enough = d_c3 < straight_threshold;
-
-    return c2_close_enough && c3_close_enough;
+bool covers_angle(float angle, bool wraps, float min_angle, float max_angle) {
+    if (wraps) {
+        bool r1 = -PI <= angle && angle <= min_angle;
+        bool r2 = max_angle <= angle && angle <= PI;
+        return r1 || r2;
+    } else {
+        return min_angle <= angle && angle <= max_angle;
+    }
 }
 
-vec2 travel(vec2 src, vec2 dst, float t) {
-    return src + (dst - src) * t;
-}
+bool arc(vec2 pos, float c_x, float c_y, float a1, float a2, float radius, bool clockwise) {
+    float sin = (pos.y - c_y) / radius;
 
-void split_curve(in vec2 curve[4], in float t, out vec2 trial_sc[4], out vec2 future_sc[4]) {
-    vec2 side1 = travel(curve[0], curve[1], t);
-    vec2 side2 = travel(curve[1], curve[2], t);
-    vec2 side3 = travel(curve[2], curve[3], t);
+    if (sin < -1.0 || sin > 1.0) {
+        return false;
+    }
 
-    vec2 diag1 = travel(side1, side2, t);
-    vec2 diag2 = travel(side2, side3, t);
+    // negation: screen coordinates
+    float r_angle = asin(-sin); // (-HALF_PI..=HALF_PI)
+    float l_angle = (r_angle < 0.0) ? (-PI - r_angle) : (PI - r_angle);
 
-    vec2 split_point = travel(diag1, diag2, t);
+    bool sorted = a1 < a2;
+    bool wraps = clockwise == sorted;
+    float min_angle = sorted ? a1 : a2;
+    float max_angle = sorted ? a2 : a1;
 
-    trial_sc[0] = curve[0];
-    trial_sc[1] = side1;
-    trial_sc[2] = diag1;
-    trial_sc[3] = split_point;
+    bool toggled = false;
 
-    future_sc[0] = split_point;
-    future_sc[1] = diag2;
-    future_sc[2] = side3;
-    future_sc[3] = curve[3];
-}
+    if (covers_angle(l_angle, wraps, min_angle, max_angle)) {
+        float l_cos = cos(l_angle);
+        float offset = c_x + l_cos * radius;
+        toggled = pos.x < offset;
+    }
 
-bool aabb_overlap(vec2 pos, vec2 curve[4]) {
-    vec2 min_c12 = min(curve[0], curve[1]);
-    vec2 max_c12 = max(curve[0], curve[1]);
-    vec2 min_c34 = min(curve[2], curve[3]);
-    vec2 max_c34 = max(curve[2], curve[3]);
+    if (covers_angle(r_angle, wraps, min_angle, max_angle)) {
+        float r_cos = cos(r_angle);
+        float offset = c_x + r_cos * radius;
+        if (pos.x < offset) toggled = !toggled;
+    }
 
-    vec2 min = min(min_c12, min_c34);
-    vec2 max = max(max_c12, max_c34);
-
-    bool x_overlap = min.x <= pos.x && pos.x <= max.x;
-    bool y_overlap = min.y <= pos.y && pos.y <= max.y;
-
-    return x_overlap && y_overlap;
+    return toggled;
 }
 
 void main() {
@@ -95,9 +77,9 @@ void main() {
     vec2 tex_pos = win_pos / TEXTURE_SIZE;
     vec4 rgba = vec4(0);
 
-    if (init == 0) rgba = texture2D(prev_iteration, tex_pos);
+    if (blank == 0) rgba = texture2D(prev_iteration, tex_pos);
 
-    // one bit winding number init
+    // one bit winding number blank
     bool wind_num = rgba.x != 0.0;
 
     win_pos.y += offset.y;
@@ -106,43 +88,25 @@ void main() {
     // texture vertical flip
     win_pos.y = height - win_pos.y;
 
-    vec2 curve[4];
-    vec2 future_sc[4];
-    vec2 trial_sc[4];
+    for (int i = 0; i < 80; i += 5) {
+        if (i >= input_len) break;
 
-    curve[0] = vec2(input_curve[0], input_curve[1]);
-    curve[1] = vec2(input_curve[2], input_curve[3]);
-    curve[2] = vec2(input_curve[4], input_curve[5]);
-    curve[3] = vec2(input_curve[6], input_curve[7]);
+        float x = input_buf[i + 0];
+        float a = input_buf[i + 1];
+        float b = input_buf[i + 2];
+        float c = input_buf[i + 3];
+        float d = input_buf[i + 4];
+        bool toggled;
 
-    float trial = 1.0;
-
-    // this is a pseudo infinite loop
-    for (int i = 0; i < 4096; i++) {
-        split_curve(curve, trial, trial_sc, future_sc);
-        bool no_overlap = !aabb_overlap(win_pos, trial_sc);
-        bool use_as_is = no_overlap || is_curve_straight(trial_sc);
-
-        if (use_as_is) {
-            vec2 c1 = trial_sc[0];
-            vec2 c4 = trial_sc[3];
-            if (use_segment_for_pip(win_pos, c1, c4)) {
-                wind_num = !wind_num;
-            }
-
-            // did we complete this curve?
-            if (trial == 1.0) {
-                break;
-            }
-
-            curve[0] = future_sc[0];
-            curve[1] = future_sc[1];
-            curve[2] = future_sc[2];
-            curve[3] = future_sc[3];
-            trial = 1.0;
+        if (x == 0.0) {
+            toggled = segment(win_pos, a, b, c, d);
         } else {
-            trial *= 0.5;
+            float radius = abs(x);
+            bool clockwise = x < 0.0;
+            toggled = arc(win_pos, a, b, c, d, radius, clockwise);
         }
+
+        if (toggled) wind_num = !wind_num;
     }
 
     float r = wind_num ? 1.0 : 0.0;

@@ -1,31 +1,18 @@
+use alloc::{vec, vec::Vec, boxed::Box};
+
 use rgb::ComponentMap;
 use super::*;
 
-use alloc::{vec, vec::Vec, boxed::Box};
-
 mod bitmap;
 mod texture;
+mod mask;
 mod tile;
-
-// mod seq;
-
-#[cfg(any(doc, feature = "simd"))]
-mod simd;
-
-type IntPoint = Vec2<i32>;
-const POINTS: usize = 64;
-const PX_WIDTH: i32 = 32;
-
-type MaskRow = u32;
-const TILE_W: usize = MaskRow::BITS as usize;
-const TILE_H: usize = 32;
-
-const DEBUG_NON_OVERLAPPING: bool = false;
-
-type Color16 = rgb::RGBA::<u16>;
 
 use tile::TileIterator;
 use bitmap::Bitmaps;
+use mask::Mask;
+
+type Color16 = rgb::RGBA::<u16>;
 
 #[derive(Debug, Clone)]
 struct Bitmap {
@@ -42,8 +29,6 @@ pub struct Canvas {
     size: Vec2<usize>,
 }
 
-type Mask = [MaskRow; TILE_H];
-
 impl Canvas {
     /// Create a basic in-memory canvas
     pub fn new(width: usize, height: usize) -> Canvas {
@@ -51,7 +36,7 @@ impl Canvas {
         Canvas {
             bitmaps: Bitmaps::new(),
             pixels: vec![Default::default(); sz].into(),
-            mask: vec![0; TILE_H].try_into().unwrap(),
+            mask: Box::new(Mask::new()),
             size: Vec2::new(width, height),
         }
     }
@@ -111,97 +96,168 @@ impl super::Canvas for Canvas {
         }
     }
 
-    fn fill_cbc(
-        &mut self,
-        path: &[CubicBezier],
-        texture: &Texture,
-        ssaa: SsaaConfig,
-    ) {
-        let mut shape_aabb = BoundingBox::default();
-
-        for curve in path {
-            shape_aabb = shape_aabb.union(curve.aabb());
-        }
-
+    fn draw(&mut self, shape: &dyn Shape, texture: &Texture, ssaa: SsaaConfig) {
         for mut tile in self.tiles(ssaa) {
-            if !shape_aabb.overlaps_with(tile.aabb) {
-                continue;
+            let mut path_impl = PathImpl {
+                mask: &mut self.mask,
+                ssaa,
+                tile_origin: tile.origin_f,
+            };
+
+            shape.draw(&mut path_impl);
+            self.mask.unpack();
+            tile.render(&mut self.pixels, self.size, &self.mask, texture, &self.bitmaps);
+            self.mask.clear();
+        }
+    }
+}
+
+struct PathImpl<'a> {
+    mask: &'a mut Mask,
+    ssaa: SsaaConfig,
+    tile_origin: Point,
+}
+
+impl PathApi for PathImpl<'_> {
+    fn segment(&mut self, segment: Segment) {
+        let rows = segment.rows();
+        let col_fn = |row| segment_collision(row, &segment);
+        self.apply_collision(rows, col_fn);
+    }
+
+    fn arc(&mut self, arc: Arc) {
+        let data = arc.data();
+        let rows = arc.rows(&data);
+        let col_fn = |row| arc_collision(row, &arc, &data);
+        self.apply_collision(rows, col_fn);
+    }
+}
+
+impl PathImpl<'_> {
+    fn apply_collision<F: Fn(f32) -> Collisions>(&mut self, rows: RangeInclusive<f32>, collisions: F) {
+        // this bias avoids double-cross glitches
+        const Y_BIAS: f32 = 0.25984984;
+
+        let log2_cols = self.ssaa.log2_cols::<u16>();
+        let tile_width = (256u16 >> log2_cols) as f32;
+        let x_mul = (1 << log2_cols) as f32;
+        let vo_len: usize = self.ssaa.rows();
+        let offsets = self.ssaa.offsets();
+
+        let mut vo_index = 0;
+        let mut row_v_offset = self.tile_origin.y;
+
+        for mask_y in 0..128 {
+            let (v_offset, _h_offsets) = offsets[vo_index];
+            let y = row_v_offset + v_offset + Y_BIAS;
+
+            if rows.contains(&y) {
+                let collisions = collisions(y);
+                for collision in collisions.iter().flatten() {
+                    // downward is not used for one bit winding number
+                    let x = collision.offset - self.tile_origin.x;
+
+                    if x >= 0.0 {
+                        if x >= tile_width {
+                            self.mask.toggle(255, mask_y);
+                        } else {
+                            let mask_x = (x * x_mul).trunc();
+                            self.mask.toggle(mask_x as u8, mask_y);
+                        }
+                    }
+                }
             }
 
-            if path.iter().any(|c| c.overlaps(tile.aabb)) {
-                let mut last_end = path.last().map(|c| c.c4);
-                for curve in path {
-                    assert_eq!(Some(curve.c1), last_end);
-                    last_end = Some(curve.c4);
-                    tile.advance(*curve, &mut self.mask);
-                }
-
-                tile.mask_pass(&mut self.mask);
-
-                tile.render(
-                    &mut self.pixels,
-                    self.size,
-                    &self.mask,
-                    texture,
-                    &self.bitmaps,
-                );
-
-                self.mask.fill(0);
-
-            } else if tile.sample_oob(path) {
-
-                tile.render_all(
-                    &mut self.pixels,
-                    self.size,
-                    texture,
-                    &self.bitmaps,
-                );
-
+            vo_index += 1;
+            if vo_index >= vo_len {
+                row_v_offset += 1.0;
+                vo_index = 0;
             }
         }
     }
 }
 
-fn is_curve_straight(curve: CubicBezier) -> bool {
-    let close_enough = |p: Point| {
-        // https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line#Line_defined_by_two_points
-
-        let l = curve.c4 - curve.c1;
-        let a = l.x * (curve.c1.y - p.y);
-        let b = l.y * (curve.c1.x - p.x);
-
-        // distance from p to projected point
-        let distance = (a - b).abs() * fast_inv_sqrt(l.x * l.x + l.y * l.y);
-
-        distance < STRAIGHT_THRESHOLD
-    };
-
-    close_enough(curve.c2) && close_enough(curve.c3)
+#[derive(Copy, Clone, Debug)]
+struct Collision {
+    offset: f32,
+    #[allow(unused)]
+    downward: bool,
 }
 
-// |num| 1.0 / num.sqrt()
-#[inline(always)]
-fn fast_inv_sqrt(num: f32) -> f32 {
-    f32::from_bits(0x5f37_5a86 - (num.to_bits() >> 1))
-}
+type Collisions = [Option<Collision>; 2];
 
-#[inline(always)]
-fn blend(src: Color16, dst: Color) -> Color {
-    match src.a {
-        255 => return src.map(|c| c as u8),
-        0 => return dst,
-        _ => (),
+fn segment_collision(row: f32, segment: &Segment) -> Collisions {
+    let Segment { a, b } = *segment;
+
+    let y_range = match a.y < b.y {
+        true => a.y..=b.y,
+        false => b.y..=a.y,
     };
 
-    let dst = rgb::RGBA::new(dst.r as u16, dst.g as u16, dst.b as u16, dst.a as u16);
+    if (!y_range.contains(&row)) || a.y == b.y {
+        return [None, None];
+    }
 
-    let u8_max = u8::MAX as u16;
-    let dst_a = u8_max - src.a;
+    let t = (a.y - row) / (a.y - b.y);
 
-    let out_r = (src.r * src.a + dst.r * dst_a) / u8_max;
-    let out_g = (src.g * src.a + dst.g * dst_a) / u8_max;
-    let out_b = (src.b * src.a + dst.b * dst_a) / u8_max;
-    let out_a = (src.a * src.a + dst.a * dst_a) / u8_max;
+    if !(0.0..=1.0).contains(&t) {
+        return [None, None];
+    }
 
-    Color::new(out_r as u8, out_g as u8, out_b as u8, out_a as u8)
+    let offset = a.x + (b.x - a.x) * t;
+    let downward = b.y > a.y;
+
+    [Some(Collision { offset, downward }), None]
+}
+
+fn arc_collision(row: f32, arc: &Arc, data: &ArcData) -> Collisions {
+    let sin_radius = row - arc.center.y;
+
+    if arc.radius <= 0.0 || !(-arc.radius..=arc.radius).contains(&sin_radius) {
+        return [None, None];
+    }
+
+    let sin = sin_radius / arc.radius;
+    let r_cos = f32::sqrt(1.0 - sin * sin);
+    let l_cos = -r_cos;
+
+    let (min, max) = (data.min_angle, data.max_angle);
+    let fake = 2.0;
+
+    let (cos_a, cos_b) = match (min <= 0.0, max <= 0.0, sin <= 0.0) {
+        (true, true, true) => (fake, fake), // no intersection
+        (true, true, false) => (data.min_angle_cos, data.max_angle_cos),
+        (true, false, true) => (1.0, data.max_angle_cos),
+        (true, false, false) => (data.min_angle_cos, 1.0),
+        (false, false, true) => (data.min_angle_cos, data.max_angle_cos),
+        (false, false, false) => (fake, fake), // no intersection
+        (false, true, _) => unreachable!(),
+    };
+
+    let (min_cos, max_cos) = match cos_a <= cos_b {
+        true => (cos_a, cos_b),
+        false => (cos_b, cos_a),
+    };
+
+    let cos_range = min_cos..=max_cos;
+
+    let r_col = cos_range.contains(&r_cos) ^ data.wraps;
+    let l_col = cos_range.contains(&l_cos) ^ data.wraps;
+
+    let mut l_collision = None;
+    let mut r_collision = None;
+
+    if l_col {
+        let downward = !arc.clockwise;
+        let offset = arc.center.x + l_cos * arc.radius;
+        l_collision = Some(Collision { offset, downward });
+    }
+
+    if r_col {
+        let downward = arc.clockwise;
+        let offset = arc.center.x + r_cos * arc.radius;
+        r_collision = Some(Collision { offset, downward });
+    }
+
+    [l_collision, r_collision]
 }

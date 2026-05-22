@@ -14,6 +14,7 @@ fn main() {
 
     let mut canvas = wizdraw::cpu::Canvas::new(w, h);
     _benchmark::benchmark(&mut canvas, wf, hf);
+
     let pixels = canvas.pixels().as_bytes();
 
     // converting to a PNG image

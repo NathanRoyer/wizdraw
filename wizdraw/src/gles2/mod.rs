@@ -142,31 +142,27 @@ impl super::Canvas for Canvas {
         }
     }
 
-    fn fill_cbc(&mut self, path: &[CubicBezier], texture: &Texture, _ssaa: SsaaConfig) {
-        let mut shape_aabb = BoundingBox::default();
+    fn draw(&mut self, shape: &dyn Shape, texture: &Texture, _ssaa: SsaaConfig) {
+        let mut bb = BoundingBox::default();
 
-        for curve in path {
-            shape_aabb = shape_aabb.union(curve.aabb());
-        }
+        shape.draw(&mut bb);
 
-        // vertical flip
         let height = self.fb_size.y as f32;
-        shape_aabb.min.y = height - shape_aabb.min.y;
-        shape_aabb.max.y = height - shape_aabb.max.y;
 
         for y in (0..self.fb_size.y).step_by(256) {
             for x in (0..self.fb_size.x).step_by(256) {
-                let (x_f32, y_f32) = (x as f32, y as f32);
-                let (tile_max_x, tile_max_y) = (x_f32 + 256.0, y_f32 + 256.0);
+                let y_flipped = height - (y as f32);
+                let (x_min, y_min) = (x as f32, y_flipped - 256.0);
+                let (x_max, y_max) = (x_min + 256.0, y_flipped);
 
-                let x_overlap = (shape_aabb.min.x < tile_max_x) & (shape_aabb.max.x >= x_f32);
-                let y_overlap = (shape_aabb.max.y < tile_max_y) & (shape_aabb.min.y >= y_f32);
+                let x_overlap = (bb.min.x < x_max) & (bb.max.x >= x_min);
+                let y_overlap = (bb.min.y < y_max) & (bb.max.y >= y_min);
 
                 if !(x_overlap & y_overlap) {
                     continue;
                 }
 
-                self.tile_pass(path, x, y, texture);
+                self.tile_pass(shape, x, y, texture);
             }
         }
 
@@ -245,6 +241,81 @@ unsafe fn init_program(gl: &Context, v_shader: &str, f_shader: &str, name: &str)
     }
 
     Ok(program)
+}
+
+const DRAW_THRESHOLD: i32 = 80;
+
+struct PathImpl<'a> {
+    canvas: &'a mut Canvas,
+    input_buf: [f32; 80],
+    input_len: i32,
+    blank: bool,
+}
+
+impl PathImpl<'_> {
+    fn extend(&mut self, encoded: [f32; 5]) {
+        let start = self.input_len as usize;
+        let end = start + 5;
+
+        let dst = &mut self.input_buf[start..end];
+        dst.copy_from_slice(&encoded);
+
+        self.input_len += 5;
+
+        if self.input_len == DRAW_THRESHOLD {
+            self.draw_call();
+        }
+    }
+
+    fn draw_call(&mut self) {
+        unsafe {
+            let buf_len = self.input_len as usize;
+            let input_buf = &self.input_buf[..buf_len];
+
+            let loc = self.canvas.gl.get_uniform_location(self.canvas.mask_program, "input_buf");
+            self.canvas.gl.uniform_1_f32_slice(loc.as_ref(), input_buf);
+            debug(&self.canvas.gl, "input_buf");
+
+            let loc = self.canvas.gl.get_uniform_location(self.canvas.mask_program, "input_len");
+            self.canvas.gl.uniform_1_i32(loc.as_ref(), self.input_len);
+            debug(&self.canvas.gl, "input_len");
+
+            self.canvas.gl.active_texture(TEXTURE0);
+            self.canvas.gl.bind_texture(TEXTURE_2D, Some(self.canvas.mask_src));
+            self.canvas.gl.framebuffer_texture_2d(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, Some(self.canvas.mask_dst), 0);
+            debug(&self.canvas.gl, "framebuffer_texture_2d");
+
+            // use the square from Self::init()
+            let (offset, count) = (0, 4);
+            self.canvas.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
+            debug(&self.canvas.gl, "draw_arrays");
+
+            swap(&mut self.canvas.mask_src, &mut self.canvas.mask_dst);
+
+            if self.blank {
+                let init_loc = self.canvas.gl.get_uniform_location(self.canvas.mask_program, "blank");
+                self.canvas.gl.uniform_1_i32(init_loc.as_ref(), 0);
+                debug(&self.canvas.gl, "blank_0");
+                self.blank = false;
+            }
+        }
+
+        self.input_len = 0;
+    }
+}
+
+impl PathApi for PathImpl<'_> {
+    fn segment(&mut self, segment: Segment) {
+        self.extend(segment.as_five_f32s());
+    }
+
+    fn arc(&mut self, arc: Arc) {
+        let Some(encoded) = arc.as_five_f32s() else {
+            return;
+        };
+
+        self.extend(encoded);
+    }
 }
 
 impl Canvas {
@@ -346,7 +417,7 @@ impl Canvas {
         }
     }
 
-    fn tile_pass(&mut self, path: &[CubicBezier], x: i32, y: i32, texture: &Texture) {
+    fn tile_pass(&mut self, shape: &dyn Shape, x: i32, y: i32, texture: &Texture) {
         debug(&self.gl, "tile_pass");
         unsafe {
             self.gl.bind_framebuffer(FRAMEBUFFER, Some(self.mask_fb));
@@ -355,9 +426,9 @@ impl Canvas {
             self.gl.use_program(Some(self.mask_program));
             debug(&self.gl, "use_program");
 
-            let init_loc = self.gl.get_uniform_location(self.mask_program, "init");
+            let init_loc = self.gl.get_uniform_location(self.mask_program, "blank");
             self.gl.uniform_1_i32(init_loc.as_ref(), 1);
-            debug(&self.gl, "init");
+            debug(&self.gl, "blank_1");
 
             let loc = self.gl.get_uniform_location(self.mask_program, "height");
             self.gl.uniform_1_f32(loc.as_ref(), self.fb_size.y as f32);
@@ -370,34 +441,17 @@ impl Canvas {
             self.gl.viewport(0, 0, 256, 256);
             debug(&self.gl, "viewport");
 
-            for (i, curve) in path.iter().enumerate() {
-                let coords = [
-                    curve.c1.x, curve.c1.y,
-                    curve.c2.x, curve.c2.y,
-                    curve.c3.x, curve.c3.y,
-                    curve.c4.x, curve.c4.y,
-                ];
+            let mut path_impl = PathImpl {
+                canvas: self,
+                input_buf: [0.0; 80],
+                input_len: 0,
+                blank: true,
+            };
 
-                let loc = self.gl.get_uniform_location(self.mask_program, "input_curve");
-                self.gl.uniform_1_f32_slice(loc.as_ref(), &coords);
-                debug(&self.gl, "input_curve");
+            shape.draw(&mut path_impl);
 
-                self.gl.active_texture(TEXTURE0);
-                self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
-                self.gl.framebuffer_texture_2d(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, Some(self.mask_dst), 0);
-                debug(&self.gl, "framebuffer_texture_2d");
-
-                // use the square from Self::init()
-                let (offset, count) = (0, 4);
-                self.gl.draw_arrays(TRIANGLE_STRIP, offset, count);
-                debug(&self.gl, "draw_arrays");
-
-                swap(&mut self.mask_src, &mut self.mask_dst);
-
-                if i == 0 {
-                    self.gl.uniform_1_i32(init_loc.as_ref(), 0);
-                    debug(&self.gl, "init_2");
-                }
+            if path_impl.input_len > 0 {
+                path_impl.draw_call();
             }
         }
 

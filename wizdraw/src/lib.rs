@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 
-#![cfg_attr(not(feature = "std"), no_std)]
+// #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(feature = "simd", feature(portable_simd))]
 
 extern crate alloc;
@@ -10,38 +10,29 @@ pub extern crate vek;
 #[cfg(feature = "std")]
 extern crate std;
 
+use core::ops::RangeInclusive;
 use vek::vec::Vec2;
 
 #[allow(unused_imports)]
 use vek::num_traits::Float;
 
 pub use ssaa::SsaaConfig;
-
 mod ssaa;
 
-#[cfg(any(doc, feature = "contour"))]
-mod contour;
+pub use path::{Path, Transformer, Striker};
+mod path;
 
-#[cfg(any(doc, feature = "contour"))]
-pub use contour::contour;
-
-#[cfg(any(doc, feature = "shapes"))]
-pub mod shapes;
+// #[cfg(any(doc, feature = "shapes"))]
+// pub mod shapes;
 
 /// Implementations of [`Canvas`] using only the CPU
 pub mod cpu;
 
-/// Implementations of [`Canvas`] using OpenGL ES 2.0
+/// Implementations of [`Canvas`] using a GPU
 #[cfg(feature = "gles2")]
 pub mod gles2;
 
-// const AABB_SAFE_MARGIN: f32 = 1.0;
-
 const TRANSPARENT: Color = Color::new(0, 0, 0, 0);
-
-// lower is better, higher is cheaper
-// more than one => glitchy
-const STRAIGHT_THRESHOLD: f32 = 0.8;
 
 /// Texture handle created using a [`Canvas`]
 #[derive(Copy, Clone, Debug)]
@@ -91,49 +82,150 @@ pub type Color = rgb::RGBA<u8>;
 /// Pixel or Subpixel coordinates
 pub type Point = Vec2<f32>;
 
-#[derive(Copy, Clone)]
-struct BoundingBox {
-    min: Point,
-    max: Point,
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct Arc {
+    pub center: Point,
+    pub radius: f32,
+    pub start_angle: f32,
+    pub stop_angle: f32,
+    pub clockwise: bool,
 }
 
-impl Default for BoundingBox {
-    fn default() -> Self {
-        Self {
-            min: Point::new(f32::INFINITY, f32::INFINITY),
-            max: Point::new(f32::NEG_INFINITY, f32::NEG_INFINITY),
+impl Arc {
+    pub fn new(center: Point, radius: f32, start_angle: f32, stop_angle: f32, clockwise: bool) -> Self {
+        Self { center, radius, start_angle, stop_angle, clockwise }
+    }
+
+    #[inline(always)]
+    pub fn data(&self) -> ArcData {
+        let sorted = self.start_angle < self.stop_angle;
+        let wraps = self.clockwise == sorted;
+
+        let (min_angle, max_angle) = match sorted {
+            true => (self.start_angle, self.stop_angle),
+            false => (self.stop_angle, self.start_angle),
+        };
+
+        ArcData {
+            min_angle,
+            max_angle,
+            min_angle_cos: f32::cos(min_angle),
+            max_angle_cos: f32::cos(max_angle),
+            wraps,
+        }
+    }
+
+    pub fn rows(&self, data: &ArcData) -> RangeInclusive<f32> {
+        use core::f32::consts::FRAC_PI_2;
+
+        #[inline(always)]
+        fn fast_sin(x: f32) -> f32 {
+            fast_cos(x - FRAC_PI_2)
+        }
+
+        let top = data.covers_angle(FRAC_PI_2);
+        let btm = data.covers_angle(-FRAC_PI_2);
+
+        let top_y = self.center.y - self.radius;
+        let btm_y = self.center.y + self.radius;
+
+        if top & btm {
+            return top_y..=btm_y;
+        }
+
+        let neg_radius = -self.radius;
+        let start_y = self.center.y + neg_radius * fast_sin(self.start_angle);
+        let stop_y = self.center.y + neg_radius * fast_sin(self.stop_angle);
+
+        // adding a bias for safety regarding sin approximation
+        let bias = 2.0;
+        let (mut min_y, mut max_y) = match start_y <= stop_y {
+            true => (start_y - bias, stop_y + bias),
+            false => (stop_y - bias, start_y + bias),
+        };
+
+        if top { min_y = top_y; }
+        if btm { max_y = btm_y; }
+
+        min_y..=max_y
+    }
+
+    pub fn cols(&self, data: &ArcData) -> RangeInclusive<f32> {
+        let r = data.covers_angle(0.0);
+        let l = data.wraps;
+
+        let l_x = self.center.x - self.radius;
+        let r_x = self.center.x + self.radius;
+
+        if l & r {
+            return l_x..=r_x;
+        }
+
+        let start_x = self.center.x + self.radius * fast_cos(self.start_angle);
+        let stop_x = self.center.x + self.radius * fast_cos(self.stop_angle);
+
+        // adding a bias for safety regarding cos approximation
+        let bias = 2.0;
+        let (mut min_x, mut max_x) = match start_x <= stop_x {
+            true => (start_x - bias, stop_x + bias),
+            false => (stop_x - bias, start_x + bias),
+        };
+
+        if l { min_x = l_x; }
+        if r { max_x = r_x; }
+
+        min_x..=max_x
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct Segment {
+    pub a: Point,
+    pub b: Point,
+}
+
+impl Segment {
+    pub fn new(a: Point, b: Point) -> Self {
+        Self { a, b }
+    }
+
+    pub fn rows(&self) -> RangeInclusive<f32> {
+        match self.a.y <= self.b.y {
+            true => self.a.y..=self.b.y,
+            false => self.b.y..=self.a.y,
         }
     }
 }
 
-impl BoundingBox {
-    fn overlaps_with(&self, other: BoundingBox) -> bool {
-        let x_overlap = (self.min.x <= other.max.x) & (self.max.x >= other.min.x);
-        let y_overlap = (self.min.y <= other.max.y) & (self.max.y >= other.min.y);
-        x_overlap & y_overlap
+pub trait PathApi {
+    fn segment(&mut self, segment: Segment);
+    fn arc(&mut self, arc: Arc);
+}
+
+pub trait Shape {
+    fn draw(&self, api: &mut dyn PathApi);
+
+    fn transform(&self, scale: f32, translation: Vec2<f32>) -> Transformer<&Self> where Self: Sized {
+        Transformer {
+            shape: self,
+            scale,
+            translation,
+        }
     }
 
-    fn union(&self, other: BoundingBox) -> Self {
-        let min_x = self.min.x.min(other.min.x);
-        let min_y = self.min.y.min(other.min.y);
-        let max_x = self.max.x.max(other.max.x);
-        let max_y = self.max.y.max(other.max.y);
-
-        Self {
-            min: Point::new(min_x, min_y),
-            max: Point::new(max_x, max_y),
+    /// Caution: path junctions must be aligned!
+    fn strike(&self, width: f32) -> Striker<&Self> where Self: Sized {
+        Striker {
+            shape: self,
+            width,
         }
     }
 }
 
-/// Cubic Bezier Curve, made of 4 control points
-#[derive(Copy, Clone, Debug, Default)]
-#[repr(C)]
-pub struct CubicBezier {
-    pub c1: Point,
-    pub c2: Point,
-    pub c3: Point,
-    pub c4: Point,
+impl<T: Shape> Shape for &T {
+    fn draw(&self, api: &mut dyn PathApi) {
+        T::draw(self, api)
+    }
 }
 
 /// The trait that rendering backends must implement
@@ -145,77 +237,7 @@ pub trait Canvas {
     fn free_bitmap(&mut self, bitmap: BitmapHandle);
 
     fn clear(&mut self);
-
-    /// Fills a shape delimited by a path, which is a sequence of cubic bezier curves
-    ///
-    /// The shape must be a [Composite Bezier Curve](https://en.wikipedia.org/wiki/Composite_B%C3%A9zier_curve).
-    /// In other words: in the `path` slice, a curve at index N must end where the N+1 curve starts;
-    /// additionally, the last curve must end where the first one starts.
-    ///
-    fn fill_cbc(&mut self, cbc: &[CubicBezier], texture: &Texture, ssaa: SsaaConfig);
-}
-
-#[inline(always)]
-fn travel(a: Point, b: Point, t: f32) -> Point {
-    Point::lerp_unclamped(a, b, t)
-}
-
-impl CubicBezier {
-    pub fn split(self, t: f32) -> (Self, Self) {
-        let side1 = travel(self.c1, self.c2, t);
-        let side2 = travel(self.c2, self.c3, t);
-        let side3 = travel(self.c3, self.c4, t);
-
-        let diag1 = travel(side1, side2, t);
-        let diag2 = travel(side2, side3, t);
-
-        let split_point = travel(diag1, diag2, t);
-
-        let first_half = Self {
-            c1: self.c1,
-            c2: side1,
-            c3: diag1,
-            c4: split_point,
-        };
-
-        let second_half = Self {
-            c1: split_point,
-            c2: diag2,
-            c3: side3,
-            c4: self.c4,
-        };
-
-        (first_half, second_half)
-    }
-
-    fn aabb(&self) -> BoundingBox {
-        let (min_x, max_x) = min_max([self.c1.x, self.c2.x, self.c3.x, self.c4.x]);
-        let (min_y, max_y) = min_max([self.c1.y, self.c2.y, self.c3.y, self.c4.y]);
-        BoundingBox {
-            min: Point::new(min_x, min_y),
-            max: Point::new(max_x, max_y),
-        }
-    }
-
-    fn split_4(&self) -> [Self; 4] {
-        let (ab, cd) = self.split(0.5);
-        let (a, b) = ab.split(0.5);
-        let (c, d) = cd.split(0.5);
-        [a, b, c, d]
-    }
-
-    fn overlaps(&self, tile: BoundingBox) -> bool {
-        if self.aabb().overlaps_with(tile) {
-            let [a, b, c, d] = self.split_4();
-            let (aabb_1, aabb_2) = (a.aabb(), b.aabb());
-            let (aabb_3, aabb_4) = (c.aabb(), d.aabb());
-
-            aabb_1.overlaps_with(tile) || aabb_2.overlaps_with(tile) ||
-            aabb_3.overlaps_with(tile) || aabb_4.overlaps_with(tile)
-        } else {
-            false
-        }
-    }
+    fn draw(&mut self, shape: &dyn Shape, texture: &Texture, ssaa: SsaaConfig);
 }
 
 fn min_max(input: [f32; 4]) -> (f32, f32) {
@@ -232,4 +254,74 @@ fn min_max(input: [f32; 4]) -> (f32, f32) {
     }
 
     (min, max)
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ArcData {
+    pub min_angle: f32,
+    pub max_angle: f32,
+    pub min_angle_cos: f32,
+    pub max_angle_cos: f32,
+    /// covered angles span across +/-PI
+    pub wraps: bool,
+}
+
+impl ArcData {
+    #[inline(always)]
+    pub fn covers_angle(&self, angle: f32) -> bool {
+        (self.min_angle..=self.max_angle).contains(&angle) ^ self.wraps
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BoundingBox {
+    pub min: Point,
+    pub max: Point,
+}
+
+impl Default for BoundingBox {
+    fn default() -> Self {
+        Self {
+            min: Point::new(f32::INFINITY, f32::INFINITY),
+            max: Point::new(-f32::INFINITY, -f32::INFINITY),
+        }
+    }
+}
+
+impl BoundingBox {
+    fn check(&mut self, point: Point) {
+        if point.x < self.min.x { self.min.x = point.x; }
+        if point.x > self.max.x { self.max.x = point.x; }
+        if point.y < self.min.y { self.min.y = point.y; }
+        if point.y > self.max.y { self.max.y = point.y; }
+    }
+}
+
+impl PathApi for BoundingBox {
+    fn segment(&mut self, segment: Segment) {
+        self.check(segment.a);
+        self.check(segment.b);
+    }
+
+    fn arc(&mut self, arc: Arc) {
+        let data = arc.data();
+        let rows = arc.rows(&data);
+        let cols = arc.cols(&data);
+
+        let min = Point::new(*cols.start(), *rows.start());
+        let max = Point::new(*cols.end(), *rows.end());
+        self.check(min);
+        self.check(max);
+    }
+}
+
+#[inline(always)]
+fn fast_cos(mut x: f32) -> f32 {
+    use core::f32::consts::FRAC_1_PI;
+
+    x *= FRAC_1_PI / 2.0;
+    x -= 0.25 + (x + 0.25).floor();
+    x *= 16.0 * (x.abs() - 0.5);
+    x += 0.225 * x * (x.abs() - 1.0);
+    x
 }

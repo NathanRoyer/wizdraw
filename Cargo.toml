@@ -8,5 +8,6 @@ members = [ "wizdraw", "wizdraw-demo-web" ]
 # debug = true
 
 [profile.release]
+debug = "line-tables-only"
 codegen-units = 1
-lto = "fat"
+# lto = "fat"

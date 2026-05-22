@@ -1,4 +1,4 @@
-use rgb::ComponentSlice;
+use rgb::ComponentBytes;
 use std::io::BufWriter;
 use wizdraw::Color;
 use std::fs::File;
@@ -66,7 +66,7 @@ fn main() {
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
-    let rgba = ComponentSlice::as_slice(&*rgba);
+    let rgba = rgba.as_bytes();
     writer.write_image_data(rgba).unwrap();
 }
 

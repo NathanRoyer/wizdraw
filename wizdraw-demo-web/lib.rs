@@ -100,13 +100,12 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     let wf = 1000.0;
     let hf = 1000.0;
 
-    let origin = Point::new(0.0, 0.0);
-    let size_f32 = size.map(|c| c as f32);
-    let _full_cover = shapes::rectangle(origin, size_f32);
+    // let origin = Point::new(0.0, 0.0);
+    // let size_f32 = size.map(|c| c as f32);
 
-    let top_left =  Point::new(0.400 * wf, 0.400 * hf);
+    let top_left =  Point::new(0.600 * wf, 0.100 * hf);
     let top_right = Point::new(x, y);
-    let btm_left =  Point::new(0.400 * wf, 0.650 * hf);
+    let btm_left =  Point::new(0.600 * wf, 0.650 * hf);
     let btm_right = Point::new(x, 0.700 * hf);
 
     let _purple = Texture::SolidColor(Color::new(127, 0, 200, 255));
@@ -126,11 +125,17 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
         bitmap,
     };
 
-    let quad = shapes::quad(top_left, top_right, btm_left, btm_right);
+    // let quad = shapes::quad(top_left, top_right, btm_left, btm_right);
+    let mut shape = Path::default();
+    shape.segment(&Segment::new(top_left, top_right));
+    shape.segment(&Segment::new(top_right, btm_right));
+    shape.segment(&Segment::new(btm_right, btm_left));
+    // shape.segment(&Segment::new(btm_left, top_left));
+    shape.cubic_bezier([btm_left, btm_right, top_right, top_left], 1.0);
     wiz.clear();
 
-    wiz.fill_cbc(&quad, &Texture::Debug, SsaaConfig::None);
-    wiz.fill_cbc(&quad, &texture, SsaaConfig::None);
+    wiz.draw(&shape, &Texture::Debug, SsaaConfig::X2);
+    wiz.draw(&shape, &texture, SsaaConfig::X2);
 
     if cpu {
         let pixels = state.cpu.pixels();
