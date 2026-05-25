@@ -86,45 +86,64 @@ pub type Point = Vec2<f32>;
 pub struct Arc {
     pub center: Point,
     pub radius: f32,
-    pub start_angle: f32,
-    pub stop_angle: f32,
-    pub clockwise: bool,
+    pub min_angle_magic: u32,
+    pub max_angle_magic: u32,
+    pub wraps: bool,
+}
+
+const CONV: f64 = 1073741823.5;
+
+fn encode_magic_2(cos: f64, neg_angle: bool) -> u32 {
+    let pos_cos = (cos + 1.0) * CONV;
+    let base = pos_cos.trunc() as u32;
+    (base << 1) | (neg_angle as u32)
+}
+
+fn encode_magic(angle: f32) -> u32 {
+    encode_magic_2(f64::cos(angle as f64), angle < 0.0)
+}
+
+// returns (cos, neg_angle)
+fn decode_magic(magic: u32) -> (f64, bool) {
+    let neg_angle = (magic & 0b01) > 0;
+    let raw_base = (magic >> 1) as f64;
+    let cos = (raw_base / CONV) - 1.0;
+    (cos, neg_angle)
 }
 
 impl Arc {
     pub fn new(center: Point, radius: f32, start_angle: f32, stop_angle: f32, clockwise: bool) -> Self {
-        Self { center, radius, start_angle, stop_angle, clockwise }
-    }
-
-    #[inline(always)]
-    pub fn data(&self) -> ArcData {
-        let sorted = self.start_angle < self.stop_angle;
-        let wraps = self.clockwise == sorted;
+        let sorted = start_angle < stop_angle;
+        let wraps = clockwise == sorted;
 
         let (min_angle, max_angle) = match sorted {
-            true => (self.start_angle, self.stop_angle),
-            false => (self.stop_angle, self.start_angle),
+            true => (start_angle, stop_angle),
+            false => (stop_angle, start_angle),
         };
 
-        ArcData {
-            min_angle,
-            max_angle,
-            min_angle_cos: f32::cos(min_angle),
-            max_angle_cos: f32::cos(max_angle),
-            wraps,
-        }
+        let min_angle_magic = encode_magic(min_angle);
+        let max_angle_magic = encode_magic(max_angle);
+
+        Self { center, radius, min_angle_magic, max_angle_magic, wraps }
     }
 
-    pub fn rows(&self, data: &ArcData) -> RangeInclusive<f32> {
-        use core::f32::consts::FRAC_PI_2;
+    pub fn rows(&self) -> RangeInclusive<f32> {
+        let (min_cos, min_neg) = decode_magic(self.min_angle_magic);
+        let (max_cos, max_neg) = decode_magic(self.max_angle_magic);
 
-        #[inline(always)]
-        fn fast_sin(x: f32) -> f32 {
-            fast_cos(x - FRAC_PI_2)
-        }
+        let mut min_sin = f64::sqrt(1.0 - min_cos * min_cos);
+        let mut max_sin = f64::sqrt(1.0 - max_cos * max_cos);
 
-        let top = data.covers_angle(FRAC_PI_2);
-        let btm = data.covers_angle(-FRAC_PI_2);
+        if min_neg { min_sin = -min_sin; }
+        if max_neg { max_sin = -max_sin; }
+
+        let top_max = (max_cos < 0.0) & !max_neg;
+        let top_min = (min_cos > 0.0) | min_neg;
+        let top = (top_min & top_max) ^ self.wraps;
+
+        let btm_min = (min_cos < 0.0) & min_neg;
+        let btm_max = (max_cos > 0.0) | !max_neg;
+        let btm = (btm_min & btm_max) ^ self.wraps;
 
         let top_y = self.center.y - self.radius;
         let btm_y = self.center.y + self.radius;
@@ -133,15 +152,16 @@ impl Arc {
             return top_y..=btm_y;
         }
 
-        let neg_radius = -self.radius;
-        let start_y = self.center.y + neg_radius * fast_sin(self.start_angle);
-        let stop_y = self.center.y + neg_radius * fast_sin(self.stop_angle);
+        // screen coordinates
+        let neg_radius = -self.radius as f64;
+        let min_angle_y = self.center.y + (neg_radius * min_sin) as f32;
+        let max_angle_y = self.center.y + (neg_radius * max_sin) as f32;
 
-        // adding a bias for safety regarding sin approximation
-        let bias = 2.0;
-        let (mut min_y, mut max_y) = match start_y <= stop_y {
-            true => (start_y - bias, stop_y + bias),
-            false => (stop_y - bias, start_y + bias),
+        // adding a bias for safety regarding sin results
+        let bias = 1.0;
+        let (mut min_y, mut max_y) = match min_angle_y <= max_angle_y {
+            true => (min_angle_y - bias, max_angle_y + bias),
+            false => (max_angle_y - bias, min_angle_y + bias),
         };
 
         if top { min_y = top_y; }
@@ -150,9 +170,12 @@ impl Arc {
         min_y..=max_y
     }
 
-    pub fn cols(&self, data: &ArcData) -> RangeInclusive<f32> {
-        let r = data.covers_angle(0.0);
-        let l = data.wraps;
+    pub fn cols(&self) -> RangeInclusive<f32> {
+        let (min_cos, min_neg) = decode_magic(self.min_angle_magic);
+        let (max_cos, max_neg) = decode_magic(self.max_angle_magic);
+
+        let r = min_neg & !max_neg;
+        let l = self.wraps;
 
         let l_x = self.center.x - self.radius;
         let r_x = self.center.x + self.radius;
@@ -161,14 +184,15 @@ impl Arc {
             return l_x..=r_x;
         }
 
-        let start_x = self.center.x + self.radius * fast_cos(self.start_angle);
-        let stop_x = self.center.x + self.radius * fast_cos(self.stop_angle);
+        let radius = self.radius as f64;
+        let min_angle_x = self.center.x + (radius * min_cos) as f32;
+        let max_angle_x = self.center.x + (radius * max_cos) as f32;
 
-        // adding a bias for safety regarding cos approximation
-        let bias = 2.0;
-        let (mut min_x, mut max_x) = match start_x <= stop_x {
-            true => (start_x - bias, stop_x + bias),
-            false => (stop_x - bias, start_x + bias),
+        // adding a bias for safety regarding cos results
+        let bias = 1.0;
+        let (mut min_x, mut max_x) = match min_angle_x <= max_angle_x {
+            true => (min_angle_x - bias, max_angle_x + bias),
+            false => (max_angle_x - bias, min_angle_x + bias),
         };
 
         if l { min_x = l_x; }
@@ -257,23 +281,6 @@ fn min_max(input: [f32; 4]) -> (f32, f32) {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ArcData {
-    pub min_angle: f32,
-    pub max_angle: f32,
-    pub min_angle_cos: f32,
-    pub max_angle_cos: f32,
-    /// covered angles span across +/-PI
-    pub wraps: bool,
-}
-
-impl ArcData {
-    #[inline(always)]
-    pub fn covers_angle(&self, angle: f32) -> bool {
-        (self.min_angle..=self.max_angle).contains(&angle) ^ self.wraps
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BoundingBox {
     pub min: Point,
     pub max: Point,
@@ -304,24 +311,12 @@ impl PathApi for BoundingBox {
     }
 
     fn arc(&mut self, arc: Arc) {
-        let data = arc.data();
-        let rows = arc.rows(&data);
-        let cols = arc.cols(&data);
+        let rows = arc.rows();
+        let cols = arc.cols();
 
         let min = Point::new(*cols.start(), *rows.start());
         let max = Point::new(*cols.end(), *rows.end());
         self.check(min);
         self.check(max);
     }
-}
-
-#[inline(always)]
-fn fast_cos(mut x: f32) -> f32 {
-    use core::f32::consts::FRAC_1_PI;
-
-    x *= FRAC_1_PI / 2.0;
-    x -= 0.25 + (x + 0.25).floor();
-    x *= 16.0 * (x.abs() - 0.5);
-    x += 0.225 * x * (x.abs() - 1.0);
-    x
 }

@@ -16,7 +16,7 @@ fn read_grid_png() -> (usize, usize, Vec<u8>) {
 
 pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
     let mut path = Path::default();
-    let max_error = 1.0;
+    let max_error = 2.0;
 
     path.cubic_bezier([
         Point::new(0.250 * wf, 0.500 * hf),

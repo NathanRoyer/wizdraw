@@ -104,7 +104,7 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     // let size_f32 = size.map(|c| c as f32);
 
     let top_left =  Point::new(0.600 * wf, 0.100 * hf);
-    let top_right = Point::new(x, y);
+    let top_right = Point::new(x + 100.0, y);
     let btm_left =  Point::new(0.600 * wf, 0.650 * hf);
     let btm_right = Point::new(x, 0.700 * hf);
 
@@ -131,11 +131,41 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     shape.segment(&Segment::new(top_right, btm_right));
     shape.segment(&Segment::new(btm_right, btm_left));
     // shape.segment(&Segment::new(btm_left, top_left));
-    shape.cubic_bezier([btm_left, btm_right, top_right, top_left], 1.0);
-    wiz.clear();
+    shape.cubic_bezier([btm_left, btm_right, top_right, top_left], 8.0);
 
-    wiz.draw(&shape, &Texture::Debug, SsaaConfig::X2);
-    wiz.draw(&shape, &texture, SsaaConfig::X2);
+    wiz.clear();
+    wiz.draw(&shape, &Texture::Debug, SsaaConfig::None);
+    wiz.draw(&shape, &texture, SsaaConfig::None);
+
+    let offset = -50.0;
+
+    let tl1 = Point::new(x + offset + 25.0, y + offset);
+    let tr1 = Point::new(x + offset + 75.0, y + offset);
+    let bl1 = Point::new(x + offset + 25.0, y + offset + 100.0);
+    let br1 = Point::new(x + offset + 75.0, y + offset + 100.0);
+
+    let tl2 = Point::new(x + offset, y + offset + 25.0);
+    let tr2 = Point::new(x + offset + 100.0, y + offset + 25.0);
+    let bl2 = Point::new(x + offset, y + offset + 75.0);
+    let br2 = Point::new(x + offset + 100.0, y + offset + 75.0);
+
+    let tli = Point::new(x + offset + 25.0, y + offset + 25.0);
+    let tri = Point::new(x + offset + 75.0, y + offset + 25.0);
+    let bli = Point::new(x + offset + 25.0, y + offset + 75.0);
+    let bri = Point::new(x + offset + 75.0, y + offset + 75.0);
+
+    let mut dialog = Path::default();
+    dialog.segment(&Segment::new(bl2, tl2));
+    dialog.segment(&Segment::new(tr1, tl1));
+    dialog.segment(&Segment::new(tr2, br2));
+    dialog.segment(&Segment::new(bl1, br1));
+    let rad = |degrees: f32| degrees.to_radians();
+    dialog.arc(&Arc::new(tli, 25.0, rad(180.0), rad(90.0), true));
+    dialog.arc(&Arc::new(tri, 25.0, rad(90.0), rad(0.0), true));
+    dialog.arc(&Arc::new(bri, 25.0, rad(0.0), rad(-90.0), true));
+    dialog.arc(&Arc::new(bli, 25.0, rad(-90.0), rad(-180.0), true));
+
+    wiz.draw(&dialog, &_purple, SsaaConfig::X4);
 
     if cpu {
         let pixels = state.cpu.pixels();

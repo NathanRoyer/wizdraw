@@ -310,11 +310,27 @@ impl PathApi for PathImpl<'_> {
     }
 
     fn arc(&mut self, arc: Arc) {
-        let Some(encoded) = arc.as_five_f32s() else {
+        if arc.radius <= 0.0 {
             return;
+        }
+
+        let nonzero_radius_wraps = match arc.wraps {
+            true => -arc.radius,
+            false => arc.radius,
         };
 
-        self.extend(encoded);
+        let (mut min_cos, min_neg) = decode_magic(arc.min_angle_magic);
+        let (mut max_cos, max_neg) = decode_magic(arc.max_angle_magic);
+        if min_neg { min_cos += 4.0; }
+        if max_neg { max_cos += 4.0; }
+
+        self.extend([
+            nonzero_radius_wraps, // nonzero => arc
+            arc.center.x, // a
+            arc.center.y, // b
+            min_cos as f32, // c
+            max_cos as f32, // d
+        ])
     }
 }
 

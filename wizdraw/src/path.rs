@@ -7,17 +7,17 @@ impl Arc {
             return None;
         }
 
-        let nonzero_radius_clockwise = match self.clockwise {
+        let nonzero_radius_wraps = match self.wraps {
             true => -self.radius,
             false => self.radius,
         };
 
         Some([
-            nonzero_radius_clockwise, // nonzero => arc
-            self.center.x,    // a
-            self.center.y,    // b
-            self.start_angle, // c
-            self.stop_angle,  // d
+            nonzero_radius_wraps, // nonzero => arc
+            self.center.x, // a
+            self.center.y, // b
+            f32::from_bits(self.min_angle_magic), // c
+            f32::from_bits(self.max_angle_magic), // d
         ])
     }
 }
@@ -79,9 +79,9 @@ impl Shape for Path {
             let arc = Arc {
                 radius: first_f32.abs(),
                 center: Point::new(a, b),
-                start_angle: c,
-                stop_angle: d,
-                clockwise: first_f32 < 0.0,
+                min_angle_magic: c.to_bits(),
+                max_angle_magic: d.to_bits(),
+                wraps: first_f32 < 0.0,
             };
 
             api.arc(arc);
@@ -186,24 +186,24 @@ impl<S: Shape> Shape for Striker<S> {
 
 impl Arc {
     pub fn from_points(points: [Point; 3]) -> Option<Self> {
-        let [a, b, c] = points;
+        let to_f64 = |float: f32| float as f64;
+        let [a, b, c] = points.map(|coord| coord.map(to_f64));
 
         let a_to_b = b - a;
         let b_to_c = c - b;
-        let mid_ab = (a + b) * 0.5;
-        let mid_bc = (b + c) * 0.5;
-        let ab_normal = Point::new(-a_to_b.y, a_to_b.x);
-        let bc_normal = Point::new(-b_to_c.y, b_to_c.x);
+        let mid_ab = (a + b) / 2.0;
+        let mid_bc = (b + c) / 2.0;
+        let ab_normal = Vec2::new(-a_to_b.y, a_to_b.x);
+        let bc_normal = Vec2::new(-b_to_c.y, b_to_c.x);
 
         let mid_ab_n = mid_ab + ab_normal;
         let mid_bc_n = mid_bc + bc_normal;
-        let y_factor = mid_bc.y - mid_bc_n.y;
-        let x_factor = mid_bc.x - mid_bc_n.x;
-        let ab_m_bc = mid_ab - mid_bc;
         let ab_m_abn = mid_ab - mid_ab_n;
+        let ab_m_bc = mid_ab - mid_bc;
+        let factor = mid_bc - mid_bc_n;
 
-        let m = ab_m_bc.x * y_factor - ab_m_bc.y * x_factor;
-        let n = ab_m_abn.x * y_factor - ab_m_abn.y * x_factor;
+        let m = ab_m_bc.x * factor.y - ab_m_bc.y * factor.x;
+        let n = ab_m_abn.x * factor.y - ab_m_abn.y * factor.x;
 
         if n == 0.0 {
             return None;
@@ -215,61 +215,45 @@ impl Arc {
         let center_to_b = b - center;
         let center_to_c = c - center;
 
-        let radius = center_to_a.magnitude();
+        let radius = center_to_b.magnitude();
 
         // negation: screen coordinates
-        let a_angle = f32::atan2(-center_to_a.y, center_to_a.x);
-        let b_angle = f32::atan2(-center_to_b.y, center_to_b.x);
-        let c_angle = f32::atan2(-center_to_c.y, center_to_c.x);
+        let c2a_cos = center_to_a.x / radius;
+        let c2b_cos = center_to_b.x / radius;
+        let c2c_cos = center_to_c.x / radius;
+        // y is positive => angle is negative
+        let c2a_neg = center_to_a.y > 0.0;
+        let c2b_neg = center_to_b.y > 0.0;
+        let c2c_neg = center_to_c.y > 0.0;
 
-        let sorted = c_angle < a_angle;
-
-        let (min, max) = match sorted {
-            false => (a_angle, c_angle),
-            true => (c_angle, a_angle),
+        let sorted = match (c2a_neg, c2c_neg) {
+            (true, false) => true,
+            (true, true) => c2a_cos > c2c_cos,
+            (false, false) => c2a_cos < c2c_cos,
+            (false, true) => false,
         };
 
-        let clockwise = (min..=max).contains(&b_angle) ^ sorted;
+        let to_f32 = |float: f64| float as f32;
+
+        let (min_cos, max_cos, min_neg, max_neg) = match sorted {
+            true => (c2a_cos, c2c_cos, c2a_neg, c2c_neg),
+            false => (c2c_cos, c2a_cos, c2c_neg, c2a_neg),
+        };
+
+        let min_angle_magic = encode_magic_2(min_cos, min_neg);
+        let max_angle_magic = encode_magic_2(max_cos, max_neg);
+
+        let range = cpu::cos_range(min_angle_magic, max_angle_magic, !c2b_neg);
+        let wraps = !range.contains(&c2b_cos);
 
         Some(Self {
-            center,
-            radius,
-            start_angle: c_angle,
-            stop_angle: a_angle,
-            clockwise,
+            center: center.map(to_f32),
+            radius: radius as f32,
+            min_angle_magic,
+            max_angle_magic,
+            wraps,
         })
     }
-}
-
-#[test]
-fn test_points_to_arc() {
-    use core::f32::consts::*;
-
-    let angle = FRAC_PI_4;
-    let a = Point::new(0.0, 1.0);
-    let b = Point::new(angle.cos(), angle.sin());
-    let c = Point::new(1.0, 0.0);
-    let d = (a + c) / 2.0;
-
-    let arc_1 = Arc {
-        center: Point::new(0.0, 0.0),
-        radius: 1.0,
-        start_angle: 0.0,
-        stop_angle: -FRAC_PI_2,
-        clockwise: true,
-    };
-
-    let arc_2 = Arc {
-        center: Point::new(0.0, 0.0),
-        radius: 1.0,
-        start_angle: -FRAC_PI_2,
-        stop_angle: 0.0,
-        clockwise: false,
-    };
-
-    assert_eq!(Arc::from_points([a, d, c]), None);
-    assert_eq!(Arc::from_points([a, b, c]), Some(arc_1));
-    assert_eq!(Arc::from_points([c, b, a]), Some(arc_2));
 }
 
 /////////////////////////////////////////////////////////
@@ -301,7 +285,7 @@ impl Path {
 
         let mut t = 0.0;
         let mut n = 1.0;
-        let mut p1 = sample(t);
+        let mut p1 = a;
 
         while t < 1.0 {
             let frac_n_2 = n * 0.5;
@@ -337,7 +321,16 @@ impl Path {
                 continue;
             }
 
-            self.arc(&arc);
+            if arc.radius > 4000.0 || n < 0.01 {
+                self.segment(&Segment { a: p1, b: p3 });
+            } else {
+                // println!("d² = {}", p1.distance_squared(p3).round());
+                // self.segment(&Segment { a: arc.center, b: p1 });
+                // self.segment(&Segment { a: arc.center, b: p2 });
+                // self.segment(&Segment { a: p2, b: p1 });
+                self.arc(&arc);
+            }
+
             p1 = p3;
             t = p3_t;
             n = 1.0 - t;

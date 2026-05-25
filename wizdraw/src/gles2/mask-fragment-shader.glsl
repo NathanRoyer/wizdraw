@@ -1,5 +1,6 @@
 #version 100
 precision highp float;
+
 const float TEXTURE_SIZE = 256.0;
 const float PI = 3.1415926538;
 
@@ -9,8 +10,8 @@ uniform vec2 offset;
 uniform int blank;
 
 // [0.0, a.x, a.y, b.x, b.y] => segment
-// [radius, c.x, c.y, start_angle, stop_angle] => counterclockwise arc
-// [-radius, c.x, c.y, start_angle, stop_angle] => clockwise arc
+// [radius, c.x, c.y, min_magic, max_magic] => non-wrapping arc
+// [-radius, c.x, c.y, min_magic, max_magic] => wrapping arc
 uniform float input_buf[80];
 uniform int input_len;
 
@@ -29,42 +30,53 @@ bool segment(vec2 pos, float a_x, float a_y, float b_x, float b_y) {
     return pos.x < offset;
 }
 
-bool covers_angle(float angle, bool wraps, float min_angle, float max_angle) {
-    if (wraps) {
-        bool r1 = -PI <= angle && angle <= min_angle;
-        bool r2 = max_angle <= angle && angle <= PI;
-        return r1 || r2;
-    } else {
-        return min_angle <= angle && angle <= max_angle;
-    }
+vec2 cos_range(float min_cos, float max_cos, bool min_neg, bool max_neg, bool row_pos) {
+    float fake = 2.0;
+    float cos_a;
+    float cos_b;
+
+    /**/ if ( min_neg &&  max_neg &&  row_pos) { cos_a = fake;    cos_b = fake;    }
+    else if ( min_neg &&  max_neg && !row_pos) { cos_a = min_cos; cos_b = max_cos; }
+    else if ( min_neg && !max_neg &&  row_pos) { cos_a = 1.0;     cos_b = max_cos; }
+    else if ( min_neg && !max_neg && !row_pos) { cos_a = min_cos; cos_b = 1.0;     }
+    else if (!min_neg && !max_neg &&  row_pos) { cos_a = min_cos; cos_b = max_cos; }
+    else if (!min_neg && !max_neg && !row_pos) { cos_a = fake;    cos_b = fake;    }
+
+    bool sorted = cos_a <= cos_b;
+    float lil_cos = sorted ? cos_a : cos_b;
+    float big_cos = sorted ? cos_b : cos_a;
+
+    return vec2(lil_cos, big_cos);
 }
 
-bool arc(vec2 pos, float c_x, float c_y, float a1, float a2, float radius, bool clockwise) {
+bool arc(vec2 pos, float c_x, float c_y, vec2 cos, bvec2 neg, float radius, bool wraps) {
     float sin = (pos.y - c_y) / radius;
 
     if (sin < -1.0 || sin > 1.0) {
         return false;
     }
 
-    // negation: screen coordinates
-    float r_angle = asin(-sin); // (-HALF_PI..=HALF_PI)
-    float l_angle = (r_angle < 0.0) ? (-PI - r_angle) : (PI - r_angle);
+    vec2 range = cos_range(cos.x, cos.y, neg.x, neg.y, sin < 0.0);
 
-    bool sorted = a1 < a2;
-    bool wraps = clockwise == sorted;
-    float min_angle = sorted ? a1 : a2;
-    float max_angle = sorted ? a2 : a1;
+    float r_cos = sqrt(1.0 - sin * sin);
+    float l_cos = -r_cos;
+
+    bool r_col = range.x <= r_cos && r_cos <= range.y;
+    bool l_col = range.x <= l_cos && l_cos <= range.y;
+
+    if (wraps) {
+        r_col = !r_col;
+        l_col = !l_col;
+    }
 
     bool toggled = false;
 
-    if (covers_angle(l_angle, wraps, min_angle, max_angle)) {
-        float l_cos = cos(l_angle);
+    if (l_col) {
         float offset = c_x + l_cos * radius;
         toggled = pos.x < offset;
     }
 
-    if (covers_angle(r_angle, wraps, min_angle, max_angle)) {
-        float r_cos = cos(r_angle);
+    if (r_col) {
         float offset = c_x + r_cos * radius;
         if (pos.x < offset) toggled = !toggled;
     }
@@ -102,8 +114,15 @@ void main() {
             toggled = segment(win_pos, a, b, c, d);
         } else {
             float radius = abs(x);
-            bool clockwise = x < 0.0;
-            toggled = arc(win_pos, a, b, c, d, radius, clockwise);
+            bool wraps = x < 0.0;
+            bool min_neg = c > 2.5;
+            bool max_neg = d > 2.5;
+            if (min_neg) c -= 4.0;
+            if (max_neg) d -= 4.0;
+            vec2 cos = vec2(c, d);
+            bvec2 neg = bvec2(min_neg, max_neg);
+
+            toggled = arc(win_pos, a, b, cos, neg, radius, wraps);
         }
 
         if (toggled) wind_num = !wind_num;

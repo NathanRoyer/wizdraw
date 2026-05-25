@@ -126,9 +126,8 @@ impl PathApi for PathImpl<'_> {
     }
 
     fn arc(&mut self, arc: Arc) {
-        let data = arc.data();
-        let rows = arc.rows(&data);
-        let col_fn = |row| arc_collision(row, &arc, &data);
+        let rows = arc.rows();
+        let col_fn = |row| arc_collision(row, &arc);
         self.apply_collision(rows, col_fn);
     }
 }
@@ -136,7 +135,7 @@ impl PathApi for PathImpl<'_> {
 impl PathImpl<'_> {
     fn apply_collision<F: Fn(f32) -> Collisions>(&mut self, rows: RangeInclusive<f32>, collisions: F) {
         // this bias avoids double-cross glitches
-        const Y_BIAS: f32 = 0.25984984;
+        const Y_BIAS: f32 = 0.1;
 
         let log2_cols = self.ssaa.log2_cols::<u16>();
         let tile_width = (256u16 >> log2_cols) as f32;
@@ -151,11 +150,14 @@ impl PathImpl<'_> {
             let (v_offset, _h_offsets) = offsets[vo_index];
             let y = row_v_offset + v_offset + Y_BIAS;
 
-            if rows.contains(&y) {
+            if y >= *rows.start() {
+                if y >= *rows.end() {
+                    break;
+                }
+
                 let collisions = collisions(y);
-                for collision in collisions.iter().flatten() {
-                    // downward is not used for one bit winding number
-                    let x = collision.offset - self.tile_origin.x;
+                for collision_x in collisions.iter().flatten() {
+                    let x = collision_x - self.tile_origin.x;
 
                     if x >= 0.0 {
                         if x >= tile_width {
@@ -177,12 +179,7 @@ impl PathImpl<'_> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-struct Collision {
-    offset: f32,
-}
-
-type Collisions = [Option<Collision>; 2];
+type Collisions = [Option<f32>; 2];
 
 fn segment_collision(row: f32, segment: &Segment) -> Collisions {
     let Segment { a, b } = *segment;
@@ -205,29 +202,20 @@ fn segment_collision(row: f32, segment: &Segment) -> Collisions {
     let offset = a.x + (b.x - a.x) * t;
     // let downward = b.y > a.y;
 
-    [Some(Collision { offset }), None]
+    [Some(offset), None]
 }
 
-fn arc_collision(row: f32, arc: &Arc, data: &ArcData) -> Collisions {
-    let sin_radius = row - arc.center.y;
-
-    if arc.radius <= 0.0 || !(-arc.radius..=arc.radius).contains(&sin_radius) {
-        return [None, None];
-    }
-
-    let sin = sin_radius / arc.radius;
-    let r_cos = f32::sqrt(1.0 - sin * sin);
-    let l_cos = -r_cos;
-
-    let (min, max) = (data.min_angle, data.max_angle);
+pub(crate) fn cos_range(min_angle_magic: u32, max_angle_magic: u32, row_pos: bool) -> RangeInclusive<f64> {
+    let (min_cos, min_neg) = decode_magic(min_angle_magic);
+    let (max_cos, max_neg) = decode_magic(max_angle_magic);
     let fake = 2.0;
 
-    let (cos_a, cos_b) = match (min <= 0.0, max <= 0.0, sin <= 0.0) {
+    let (cos_a, cos_b) = match (min_neg, max_neg, row_pos) {
         (true, true, true) => (fake, fake), // no intersection
-        (true, true, false) => (data.min_angle_cos, data.max_angle_cos),
-        (true, false, true) => (1.0, data.max_angle_cos),
-        (true, false, false) => (data.min_angle_cos, 1.0),
-        (false, false, true) => (data.min_angle_cos, data.max_angle_cos),
+        (true, true, false) => (min_cos, max_cos),
+        (true, false, true) => (1.0, max_cos),
+        (true, false, false) => (min_cos, 1.0),
+        (false, false, true) => (min_cos, max_cos),
         (false, false, false) => (fake, fake), // no intersection
         (false, true, _) => unreachable!(),
     };
@@ -237,24 +225,38 @@ fn arc_collision(row: f32, arc: &Arc, data: &ArcData) -> Collisions {
         false => (cos_b, cos_a),
     };
 
-    let cos_range = min_cos..=max_cos;
+    min_cos..=max_cos
+}
 
-    let r_col = cos_range.contains(&r_cos) ^ data.wraps;
-    let l_col = cos_range.contains(&l_cos) ^ data.wraps;
+fn arc_collision(row: f32, arc: &Arc) -> Collisions {
+    type Precise = f64;
+    let sin_radius = row - arc.center.y;
+
+    if arc.radius <= 0.0 || !(-arc.radius..=arc.radius).contains(&sin_radius) {
+        return [None, None];
+    }
+
+    let precise_radius = arc.radius as Precise;
+    let sin = (sin_radius as Precise) / precise_radius;
+    let r_cos = Precise::sqrt(1.0 - sin * sin);
+    let l_cos = -r_cos;
+
+    let range = cos_range(arc.min_angle_magic, arc.max_angle_magic, sin < 0.0);
+
+    let r_col = range.contains(&r_cos) ^ arc.wraps;
+    let l_col = range.contains(&l_cos) ^ arc.wraps;
 
     let mut l_collision = None;
     let mut r_collision = None;
 
     if l_col {
-        // let downward = !arc.clockwise;
-        let offset = arc.center.x + l_cos * arc.radius;
-        l_collision = Some(Collision { offset });
+        let offset = arc.center.x + (l_cos * precise_radius) as f32;
+        l_collision = Some(offset);
     }
 
     if r_col {
-        // let downward = arc.clockwise;
-        let offset = arc.center.x + r_cos * arc.radius;
-        r_collision = Some(Collision { offset });
+        let offset = arc.center.x + (r_cos * precise_radius) as f32;
+        r_collision = Some(offset);
     }
 
     [l_collision, r_collision]
