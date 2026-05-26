@@ -105,8 +105,11 @@ impl super::Canvas for Canvas {
             };
 
             shape.draw(&mut path_impl);
-            self.mask.unpack();
-            tile.render(&mut self.pixels, self.size, &self.mask, texture, &self.bitmaps);
+
+            if self.mask.unpack() {
+                tile.render(&mut self.pixels, self.size, &self.mask, texture, &self.bitmaps);
+            }
+
             self.mask.clear();
         }
     }

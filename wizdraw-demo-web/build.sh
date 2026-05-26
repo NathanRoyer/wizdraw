@@ -12,4 +12,4 @@ cp index.html $WEB_STATIC
 wasm-bindgen --web $BINARY --out-dir $WEB_STATIC
 
 echo "open http://localhost:8080/index.html"
-httpserv $WEB_STATIC
+httpserv $WEB_STATIC 0.0.0.0:8080

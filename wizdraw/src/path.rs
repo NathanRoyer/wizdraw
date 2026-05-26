@@ -286,6 +286,7 @@ impl Path {
         let mut t = 0.0;
         let mut n = 1.0;
         let mut p1 = a;
+        let mut arc_fail = false;
 
         while t < 1.0 {
             let frac_n_2 = n * 0.5;
@@ -298,13 +299,21 @@ impl Path {
             let p3 = sample(p3_t);
 
             let Some(arc) = Arc::from_points([p1, p2, p3]) else {
-                self.segment(&Segment { a: p1, b: p3 });
-                p1 = p3;
-                t = p3_t;
-                n = 1.0 - t;
+                if arc_fail {
+                    arc_fail = false;
+                    self.segment(&Segment { a: p1, b: p3 });
+                    p1 = p3;
+                    t = p3_t;
+                    n = 1.0 - t;
+                } else {
+                    arc_fail = true;
+                    n = frac_n_4;
+                }
+
                 continue;
             };
 
+            arc_fail = false;
             let radius_squared = arc.radius * arc.radius;
 
             let e1 = sample(p2_t - frac_n_4);

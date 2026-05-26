@@ -157,13 +157,11 @@ fn blend(src: Color16, dst: Color) -> Color {
 
     let dst = rgb::RGBA::new(dst.r as u16, dst.g as u16, dst.b as u16, dst.a as u16);
 
-    let u8_max = u8::MAX as u16;
-    let dst_a = u8_max - src.a;
-
-    let out_r = (src.r * src.a + dst.r * dst_a) / u8_max;
-    let out_g = (src.g * src.a + dst.g * dst_a) / u8_max;
-    let out_b = (src.b * src.a + dst.b * dst_a) / u8_max;
-    let out_a = (src.a * src.a + dst.a * dst_a) / u8_max;
+    let dst_a = 255u16 - src.a;
+    let out_r = (src.r * src.a + dst.r * dst_a) / 255u16;
+    let out_g = (src.g * src.a + dst.g * dst_a) / 255u16;
+    let out_b = (src.b * src.a + dst.b * dst_a) / 255u16;
+    let out_a = (src.a * src.a + dst.a * dst_a) / 255u16;
 
     Color::new(out_r as u8, out_g as u8, out_b as u8, out_a as u8)
 }

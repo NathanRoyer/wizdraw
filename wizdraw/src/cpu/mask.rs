@@ -45,7 +45,9 @@ impl Mask {
         }
     }
 
-    pub fn unpack(&mut self) {
+    pub fn unpack(&mut self) -> bool {
+        let mut dirty = false;
+
         for row in self.rows.iter_mut() {
             let mut drawing = false;
 
@@ -64,6 +66,7 @@ impl Mask {
                 for _ in 0..32 {
                     let is_set = (*dword & bitmask) > 0;
                     drawing ^= is_set;
+                    dirty |= drawing;
                     out = out << 1;
                     out |= drawing as u32;
                     bitmask = bitmask >> 1;
@@ -72,5 +75,7 @@ impl Mask {
                 *dword = out;
             }
         }
+
+        dirty
     }
 }
