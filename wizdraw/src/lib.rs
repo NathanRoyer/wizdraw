@@ -1,7 +1,6 @@
 #![doc = include_str!("../README.md")]
 
 // #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(feature = "simd", feature(portable_simd))]
 
 extern crate alloc;
 pub extern crate rgb;
@@ -11,6 +10,7 @@ pub extern crate vek;
 extern crate std;
 
 use core::ops::RangeInclusive;
+use alloc::vec::Vec;
 use vek::vec::Vec2;
 
 #[allow(unused_imports)]
@@ -31,6 +31,10 @@ pub mod cpu;
 /// Implementations of [`Canvas`] using a GPU
 #[cfg(feature = "gles2")]
 pub mod gles2;
+
+/// Text/Font/Glyph support
+#[cfg(feature = "text")]
+pub mod text;
 
 const TRANSPARENT: Color = Color::new(0, 0, 0, 0);
 
@@ -218,6 +222,12 @@ impl Segment {
             true => self.a.y..=self.b.y,
             false => self.b.y..=self.a.y,
         }
+    }
+}
+
+impl From<(Point, Point)> for Segment {
+    fn from((a, b): (Point, Point)) -> Self {
+        Self::new(a, b)
     }
 }
 

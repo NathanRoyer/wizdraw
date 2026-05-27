@@ -4,6 +4,7 @@ use wizdraw::{Canvas, Color, Texture, Point, Path, Shape, SsaaConfig};
 use std::time::Instant;
 
 const GRID_PNG: &'static [u8] = include_bytes!("../../misc/grid.png");
+const NOTO_TTF: &'static [u8] = include_bytes!("../../misc/noto-sans.ttf");
 
 fn read_grid_png() -> (usize, usize, Vec<u8>) {
     let decoder = png::Decoder::new(GRID_PNG);
@@ -32,10 +33,19 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
         Point::new(0.250 * wf, 0.500 * hf),
     ], max_error);
 
+    let mut font = wizdraw::text::Font::new(NOTO_TTF);
+    let font_size = 200.0;
+    let text_width = font.text_width("Hello World!", font_size);
+    let text_xy = Point::new(0.5 * wf - 0.5 * text_width, 0.5 * hf - font_size * 0.5);
+    let text_shape = font.text_shape("Hello World!", font_size, text_xy);
+
     let (tex_w, tex_h, tex_p) = read_grid_png();
 
     let green = Color::new(100, 200, 150, 255);
-    let _green = Texture::SolidColor(green);
+    let green = Texture::SolidColor(green);
+
+    let white = Color::new(255, 255, 255, 255);
+    let white = Texture::SolidColor(white);
 
     for ssaa in [SsaaConfig::None, SsaaConfig::X2, SsaaConfig::X4] {
         canvas.clear();
@@ -59,7 +69,9 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
                 canvas.draw(&path, &texture, ssaa);
 
                 let path = path.strike(4.0);
-                canvas.draw(&path, &_green, ssaa);
+                canvas.draw(&path, &green, ssaa);
+
+                canvas.draw(&text_shape, &white, ssaa);
             }
             let avg_ms = then.elapsed().as_micros() / num;
             let fps = 1000000 / avg_ms;

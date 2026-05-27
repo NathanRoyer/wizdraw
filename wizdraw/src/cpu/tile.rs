@@ -116,7 +116,7 @@ impl Tile {
                 }
 
                 if hits != 0 {
-                    let mut color = RGBA::<u16>::new(0, 0, 0, 0);
+                    let mut src = RGBA::<u16>::new(0, 0, 0, 0);
 
                     for ssaa_y in 0..ssaa_rows {
                         for ssaa_x in 0..ssaa_cols {
@@ -126,13 +126,13 @@ impl Tile {
                                 let (v_offset, h_offsets) = offsets[ssaa_y as usize];
                                 let h_offset = h_offsets[ssaa_x as usize];
                                 let point = subp_base + Vec2::new(h_offset, v_offset);
-                                color += texture.sample(point, bitmaps);
+                                src += texture.sample(point, bitmaps);
                             }
                         }
                     }
 
                     // divide by num_subpx
-                    let src = const_ssaa!(self.ssaa, color, /);
+                    src = const_ssaa!(self.ssaa, src, /);
 
                     let px_i = fb_line_offset + x;
                     let dst = &mut pixels[px_i];

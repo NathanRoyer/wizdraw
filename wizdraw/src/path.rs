@@ -46,14 +46,16 @@ impl Path {
     pub fn clear(&mut self) {
         self.data.clear()
     }
+}
 
-    pub fn arc(&mut self, arc: &Arc) {
+impl PathApi for Path {
+    fn arc(&mut self, arc: Arc) {
         if let Some(encoded) = arc.as_five_f32s() {
             self.data.extend_from_slice(&encoded);
         }
     }
 
-    pub fn segment(&mut self, segment: &Segment) {
+    fn segment(&mut self, segment: Segment) {
         let encoded = segment.as_five_f32s();
         self.data.extend_from_slice(&encoded);
     }
@@ -270,17 +272,18 @@ impl Path {
         let [a, b, c, d] = points;
 
         if aligned([a, b, d]) && aligned([a, c, d]) {
-            self.segment(&Segment { a, b: d });
+            self.segment((a, d).into());
             return;
         }
 
         let sample = |t: f32| {
-            let ab = Point::lerp_unclamped_precise(a, b, t);
-            let bc = Point::lerp_unclamped_precise(b, c, t);
-            let cd = Point::lerp_unclamped_precise(c, d, t);
-            let abc = Point::lerp_unclamped_precise(ab, bc, t);
-            let bcd = Point::lerp_unclamped_precise(bc, cd, t);
-            Point::lerp_unclamped_precise(abc, bcd, t)
+            let lerp = Vec2::lerp_unclamped_precise;
+            let ab = lerp(a, b, t);
+            let bc = lerp(b, c, t);
+            let cd = lerp(c, d, t);
+            let abc = lerp(ab, bc, t);
+            let bcd = lerp(bc, cd, t);
+            lerp(abc, bcd, t)
         };
 
         let mut t = 0.0;
@@ -301,7 +304,7 @@ impl Path {
             let Some(arc) = Arc::from_points([p1, p2, p3]) else {
                 if arc_fail {
                     arc_fail = false;
-                    self.segment(&Segment { a: p1, b: p3 });
+                    self.segment((p1, p3).into());
                     p1 = p3;
                     t = p3_t;
                     n = 1.0 - t;
@@ -331,13 +334,13 @@ impl Path {
             }
 
             if arc.radius > 4000.0 || n < 0.01 {
-                self.segment(&Segment { a: p1, b: p3 });
+                self.segment((p1, p3).into());
             } else {
                 // println!("d² = {}", p1.distance_squared(p3).round());
-                // self.segment(&Segment { a: arc.center, b: p1 });
-                // self.segment(&Segment { a: arc.center, b: p2 });
-                // self.segment(&Segment { a: p2, b: p1 });
-                self.arc(&arc);
+                // self.segment((arc.center, p1).into());
+                // self.segment((arc.center, p2).into());
+                // self.segment((p2, p1).into());
+                self.arc(arc);
             }
 
             p1 = p3;

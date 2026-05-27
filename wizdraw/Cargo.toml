@@ -10,17 +10,21 @@ repository = "https://github.com/NathanRoyer/wizdraw"
 categories = [ "rendering", "no-std" ]
 
 [dependencies]
+
+# required:
 vek = { version = "0.17", default-features = false, features = [ "libm" ] }
-glow = { version = "0.17", optional = true }
 rgb = { version = "0.8", features = [ "bytemuck" ] }
 
+# optional:
+ttf-parser = { version = "0.25", optional = true } # features: text
+litemap = { version = "0.8", optional = true } # features: text
+glow = { version = "0.17", optional = true } # features: gles2
+
 [features]
-default = [ "contour", "shapes" ]
+default = [ "text", "shapes" ]
 gles2 = [ "dep:glow", "std" ]
-gl-debug = []
-contour = []
+text = [ "dep:ttf-parser", "dep:litemap" ]
 shapes = []
-simd = []
 std = []
 
 [dev-dependencies]
