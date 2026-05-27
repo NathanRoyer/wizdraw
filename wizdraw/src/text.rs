@@ -190,7 +190,7 @@ impl<'a, T: AsRef<[u8]>> Shape for TextShape<'a, T> {
         for glyph in self.text.chars() {
             let data = self.font.get_preloaded(glyph);
             data.path.transform(self.scaler, translation).draw(api);
-            translation.x += data.h_advance;
+            translation.x += data.h_advance * self.scaler;
         }
     }
 }

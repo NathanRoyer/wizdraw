@@ -131,6 +131,12 @@ impl Arc {
         Self { center, radius, min_angle_magic, max_angle_magic, wraps }
     }
 
+    pub fn disk(center: Point, radius: f32) -> Self {
+        let min_angle_magic = encode_magic_2(-1.0, true);
+        let max_angle_magic = encode_magic_2(-1.0, false);
+        Self { center, radius, min_angle_magic, max_angle_magic, wraps: false }
+    }
+
     pub fn rows(&self) -> RangeInclusive<f32> {
         let (min_cos, min_neg) = decode_magic(self.min_angle_magic);
         let (max_cos, max_neg) = decode_magic(self.max_angle_magic);

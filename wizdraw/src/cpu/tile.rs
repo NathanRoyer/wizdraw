@@ -139,10 +139,10 @@ impl Tile {
                     *dst = blend(src, *dst);
                 }
 
-                mask_base.x += ssaa_cols;
+                mask_base.x = mask_base.x.wrapping_add(ssaa_cols);
             }
 
-            mask_base.y += ssaa_rows;
+            mask_base.y = mask_base.y.wrapping_add(ssaa_rows);
         }
     }
 }

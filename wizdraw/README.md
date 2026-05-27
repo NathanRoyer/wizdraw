@@ -1,8 +1,7 @@
-`wizdraw` - Portable crate to fill and stroke composite bezier curves (paths)
-
-All operations are done on an offscreen canvas.
+`wizdraw` - Portable crate to fill (and stroke) paths
 
 The CPU implementation is always available and performs OK.
+There is also an OpenGL ES 2.0 implementation.
 
 ### Limitations
 
@@ -12,36 +11,25 @@ The CPU implementation is always available and performs OK.
 
 ### Features
 
-- `simd`: include the SIMD canvas implementation
 - `gles2`: include the OpenGL ES 2.0 canvas implementation
-- `contour`: include path stroking code
 - `shapes`: include basic shape generation code
-
-By default, this crate doesn't use SIMD because a nightly toolchain is required for that.
+- `text`: include support for text/glyph rendering using ttf-parser
 
 ### Example
 
 ```rust
+use wizdraw::{Arc, Path, Color, Texture, Point, SsaaConfig, PathApi, Canvas};
+
 let myrtle = Color::new(255, 100, 100, 255);
 let texture = Texture::SolidColor(myrtle);
 
-let oval = [
-    CubicBezier {
-        c1: Point::new(50.0, 250.0),
-        c2: Point::new(50.0, 50.0),
-        c3: Point::new(450.0, 50.0),
-        c4: Point::new(450.0, 250.0),
-    },
-    CubicBezier {
-        c1: Point::new(450.0, 250.0),
-        c2: Point::new(450.0, 450.0),
-        c3: Point::new(50.0, 450.0),
-        c4: Point::new(50.0, 250.0),
-    },
-];
+let center = Point::new(250.0, 250.0);
+
+let mut path = wizdraw::Path::default();
+path.arc(Arc::disk(center, 150.0));
 
 let mut canvas = wizdraw::cpu::Canvas::new(500, 500);
-canvas.fill_cbc(&oval, &texture, false, SsaaConfig::X4);
+canvas.draw(&path, &texture, SsaaConfig::X4);
 
 // retrieve a framebuffer
 let pixels = canvas.pixels();
@@ -51,4 +39,4 @@ let pixels = canvas.pixels();
 
 Check out the `cpu` example to generate this image:
 
-![output.png](https://docs.rs/crate/wizdraw/2.2.0/source/output.png)
+![output.png](https://docs.rs/crate/wizdraw/2.3.0/source/output.png)

@@ -615,11 +615,12 @@ impl Canvas {
 }
 
 fn debug(_gl: &Context, _operation: &str) {
-    #[cfg(feature = "gl-debug")]
-    unsafe {
-        let error = _gl.get_error();
-        if error != 0 {
-            std::println!("{_operation}: error={error}");
+    if false {
+        unsafe {
+            let error = _gl.get_error();
+            if error != 0 {
+                std::println!("{_operation}: error={error}");
+            }
         }
     }
 }

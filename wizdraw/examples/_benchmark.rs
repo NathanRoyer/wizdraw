@@ -34,7 +34,7 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
     ], max_error);
 
     let mut font = wizdraw::text::Font::new(NOTO_TTF);
-    let font_size = 200.0;
+    let font_size = 100.0;
     let text_width = font.text_width("Hello World!", font_size);
     let text_xy = Point::new(0.5 * wf - 0.5 * text_width, 0.5 * hf - font_size * 0.5);
     let text_shape = font.text_shape("Hello World!", font_size, text_xy);

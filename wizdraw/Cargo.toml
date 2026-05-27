@@ -1,11 +1,11 @@
 [package]
 name = "wizdraw"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 authors = [ "Nathan ROYER <nathan.royer.pro@gmail.com>" ]
-description = "Portable crate to fill and stroke composite bezier curves (paths)"
+description = "Portable crate to fill (and stroke) paths"
 license = "MIT"
-keywords = [ "vector-graphics", "render", "svg", "no_std", "simd" ]
+keywords = [ "vector-graphics", "render", "svg", "no_std" ]
 repository = "https://github.com/NathanRoyer/wizdraw"
 categories = [ "rendering", "no-std" ]
 
