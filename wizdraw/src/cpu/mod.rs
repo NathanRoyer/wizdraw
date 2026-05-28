@@ -97,7 +97,20 @@ impl super::Canvas for Canvas {
     }
 
     fn draw(&mut self, shape: &dyn Shape, texture: &Texture, ssaa: SsaaConfig) {
+        let mut bb = BoundingBox::default();
+        shape.draw(&mut bb);
+
         for mut tile in self.tiles(ssaa) {
+            let sz_f32 = tile.tile_size.map(|c| c as f32);
+            let tile_max = tile.origin_f + sz_f32;
+
+            let x_overlap = (bb.max.x >= tile.origin_f.x) & (bb.min.x < tile_max.x);
+            let y_overlap = (bb.max.y >= tile.origin_f.y) & (bb.min.y < tile_max.y);
+
+            if !(x_overlap & y_overlap) {
+                continue;
+            }
+
             let mut path_impl = PathImpl {
                 mask: &mut self.mask,
                 ssaa,

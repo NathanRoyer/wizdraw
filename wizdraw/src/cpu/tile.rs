@@ -37,7 +37,7 @@ pub struct Tile {
     /// top left corner of the tile
     origin_u: Vec2<usize>,
     pub origin_f: Vec2<f32>,
-    tile_size: Vec2<usize>,
+    pub tile_size: Vec2<usize>,
     ssaa: SsaaConfig,
 }
 
@@ -65,6 +65,7 @@ impl Iterator for TileIterator {
 
 // rendering
 impl Tile {
+    // #[inline(never)]
     pub fn render(
         &mut self,
         pixels: &mut [Color],

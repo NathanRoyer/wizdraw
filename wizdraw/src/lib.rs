@@ -19,7 +19,7 @@ use vek::num_traits::Float;
 pub use ssaa::SsaaConfig;
 mod ssaa;
 
-pub use path::{Path, Transformer, Striker};
+pub use path::{Path, Transformer};
 mod path;
 
 // #[cfg(any(doc, feature = "shapes"))]
@@ -137,7 +137,7 @@ impl Arc {
         Self { center, radius, min_angle_magic, max_angle_magic, wraps: false }
     }
 
-    pub fn rows(&self) -> RangeInclusive<f32> {
+    pub fn ends(&self) -> [Point; 2] {
         let (min_cos, min_neg) = decode_magic(self.min_angle_magic);
         let (max_cos, max_neg) = decode_magic(self.max_angle_magic);
 
@@ -146,6 +146,20 @@ impl Arc {
 
         if min_neg { min_sin = -min_sin; }
         if max_neg { max_sin = -max_sin; }
+
+        let radius = self.radius as f64;
+        let neg_radius = -radius;
+        let min_angle_x = self.center.x + (radius * min_cos) as f32;
+        let max_angle_x = self.center.x + (radius * max_cos) as f32;
+        let min_angle_y = self.center.y + (neg_radius * min_sin) as f32;
+        let max_angle_y = self.center.y + (neg_radius * max_sin) as f32;
+
+        [Point::new(min_angle_x, min_angle_y), Point::new(max_angle_x, max_angle_y)]
+    }
+
+    pub fn rows(&self) -> RangeInclusive<f32> {
+        let (min_cos, min_neg) = decode_magic(self.min_angle_magic);
+        let (max_cos, max_neg) = decode_magic(self.max_angle_magic);
 
         let top_max = (max_cos < 0.0) & !max_neg;
         let top_min = (min_cos > 0.0) | min_neg;
@@ -161,6 +175,12 @@ impl Arc {
         if top & btm {
             return top_y..=btm_y;
         }
+
+        let mut min_sin = f64::sqrt(1.0 - min_cos * min_cos);
+        let mut max_sin = f64::sqrt(1.0 - max_cos * max_cos);
+
+        if min_neg { min_sin = -min_sin; }
+        if max_neg { max_sin = -max_sin; }
 
         // screen coordinates
         let neg_radius = -self.radius as f64;
@@ -252,19 +272,54 @@ pub trait Shape {
             translation,
         }
     }
-
-    /// Caution: path junctions must be aligned!
-    fn strike(&self, width: f32) -> Striker<&Self> where Self: Sized {
-        Striker {
-            shape: self,
-            width,
-        }
-    }
 }
 
 impl<T: Shape> Shape for &T {
     fn draw(&self, api: &mut dyn PathApi) {
         T::draw(self, api)
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Disk {
+    pub center: Point,
+    pub radius: f32,
+}
+
+impl Shape for Disk {
+    fn draw(&self, api: &mut dyn PathApi) {
+        api.arc(Arc::disk(self.center, self.radius));
+    }
+}
+
+struct StrikerApi2<'a, C: Canvas + ?Sized> {
+    canvas: &'a mut C,
+    texture: &'a Texture<'a>,
+    ssaa: SsaaConfig,
+    width: f32,
+}
+
+impl<C: Canvas + ?Sized> StrikerApi2<'_, C> {
+    fn point(&mut self, point: Point) {
+        let disk = Disk {
+            center: point,
+            radius: self.width,
+        };
+
+        self.canvas.draw(&disk, self.texture, self.ssaa);
+    }
+}
+
+impl<C: Canvas + ?Sized> PathApi for StrikerApi2<'_, C> {
+    fn segment(&mut self, segment: Segment) {
+        self.point(segment.a);
+        self.point(segment.b);
+    }
+
+    fn arc(&mut self, arc: Arc) {
+        let [a, b] = arc.ends();
+        self.point(a);
+        self.point(b);
     }
 }
 
@@ -278,6 +333,24 @@ pub trait Canvas {
 
     fn clear(&mut self);
     fn draw(&mut self, shape: &dyn Shape, texture: &Texture, ssaa: SsaaConfig);
+
+    fn stroke<S: Shape>(&mut self, shape: &S, width: f32, texture: &Texture, ssaa: SsaaConfig) {
+        let striker = path::InitialStriker {
+            shape,
+            width,
+        };
+
+        self.draw(&striker, texture, ssaa);
+
+        let mut striker2 = StrikerApi2 {
+            canvas: self,
+            texture,
+            ssaa,
+            width,
+        };
+
+        shape.draw(&mut striker2);
+    }
 }
 
 fn min_max(input: [f32; 4]) -> (f32, f32) {

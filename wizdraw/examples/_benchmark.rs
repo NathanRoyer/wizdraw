@@ -1,5 +1,5 @@
 use rgb::AsPixels;
-use wizdraw::{Canvas, Color, Texture, Point, Path, Shape, SsaaConfig};
+use wizdraw::{Canvas, Color, Texture, Point, Path, SsaaConfig};
 
 use std::time::Instant;
 
@@ -34,10 +34,10 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
     ], max_error);
 
     let mut font = wizdraw::text::Font::new(NOTO_TTF);
-    let font_size = 100.0;
-    let text_width = font.text_width("Hello World!", font_size);
+    let font_size = 300.0;
+    let text_width = font.text_width("wizdraw!", font_size);
     let text_xy = Point::new(0.5 * wf - 0.5 * text_width, 0.5 * hf - font_size * 0.5);
-    let text_shape = font.text_shape("Hello World!", font_size, text_xy);
+    let text_shape = font.text_shape("wizdraw!", font_size, text_xy);
 
     let (tex_w, tex_h, tex_p) = read_grid_png();
 
@@ -65,13 +65,12 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
             let then = Instant::now();
             let num = 20;
             for _ in 0..num {
-                canvas.draw(&path, &Texture::Debug, ssaa);
-                canvas.draw(&path, &texture, ssaa);
-
-                let path = path.strike(4.0);
-                canvas.draw(&path, &green, ssaa);
+                /*canvas.draw(&path, &Texture::Debug, ssaa);
+                canvas.draw(&path, &texture, ssaa);*/
 
                 canvas.draw(&text_shape, &white, ssaa);
+
+                canvas.stroke(&text_shape, 2.0, &Texture::Debug, ssaa);
             }
             let avg_ms = then.elapsed().as_micros() / num;
             let fps = 1000000 / avg_ms;

@@ -134,13 +134,13 @@ impl<S: Shape> Shape for Transformer<S> {
 
 /////////////////////////////////////////////////////////
 
-pub struct Striker<S: Shape> {
+pub struct InitialStriker<S: Shape> {
     pub shape: S,
     pub width: f32,
 }
 
 struct StrikerApi<'a, S: Shape> {
-    inner: &'a Striker<S>,
+    inner: &'a InitialStriker<S>,
     real_api: &'a mut dyn PathApi,
 }
 
@@ -162,18 +162,27 @@ impl<S: Shape> PathApi for StrikerApi<'_, S> {
         segment.a -= normal;
         segment.b -= normal;
         self.real_api.segment(segment);
+
+        self.real_api.segment((segment.a, clone.a).into());
+        self.real_api.segment((segment.b, clone.b).into());
     }
 
     fn arc(&mut self, mut arc: Arc) {
         arc.radius += self.inner.width;
+        let [big_start, big_stop] = arc.ends();
         self.real_api.arc(arc);
+
         arc.radius -= self.inner.width;
         arc.radius -= self.inner.width;
+        let [lil_start, lil_stop] = arc.ends();
         self.real_api.arc(arc);
+
+        self.real_api.segment((big_start, lil_start).into());
+        self.real_api.segment((big_stop, lil_stop).into());
     }
 }
 
-impl<S: Shape> Shape for Striker<S> {
+impl<S: Shape> Shape for InitialStriker<S> {
     fn draw(&self, api: &mut dyn PathApi) {
         let mut wrapper = StrikerApi {
             inner: self,
