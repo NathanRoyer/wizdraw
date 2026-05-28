@@ -5,10 +5,10 @@ pub struct Mask {
 
 // one row = 8 u32s = 256 bits
 
-fn dword_bitmask(x: u8, y: u8) -> (usize, u32) {
+fn dword_bitmask(x: u8, y: u8) -> (usize, u8) {
     let dword = (x / 32) as u16 + (y as u16 * 8);
     let shift = x % 32;
-    (dword as usize, 1 << shift)
+    (dword as usize, shift)
 }
 
 impl Mask {
@@ -23,18 +23,17 @@ impl Mask {
     }
 
     pub fn toggle(&mut self, x: u8, y: u8) {
-        let (dword, bitmask) = dword_bitmask(x, y);
-        self.rows[dword] ^= bitmask;
+        let (dword, shift) = dword_bitmask(x, y);
+        self.rows[dword] ^= 1 << shift;
     }
 
-    pub fn get(&self, x: u8, y: u8) -> bool {
-        let (dword, bitmask) = dword_bitmask(x, y);
-        (self.rows[dword] & bitmask) != 0
+    pub fn get(&self, x: u8, y: u8, num: u8) -> u32 {
+        let bitmask = (1 << num) - 1;
+        let (dword, shift) = dword_bitmask(x, y);
+        (self.rows[dword] >> shift) & bitmask
     }
 
-    pub fn unpack(&mut self) -> bool {
-        let mut dirty = false;
-
+    pub fn unpack(&mut self) {
         for row in self.rows.chunks_mut(8).rev() {
             let mut drawing = false;
 
@@ -58,11 +57,8 @@ impl Mask {
                     bitmask = bitmask >> 1;
                 }
 
-                dirty |= true;
                 *dword = out;
             }
         }
-
-        dirty
     }
 }

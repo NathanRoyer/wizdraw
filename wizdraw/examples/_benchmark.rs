@@ -63,14 +63,13 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
 
         if true {
             let then = Instant::now();
-            let num = 20;
+            let num = 50;
             for _ in 0..num {
-                /*canvas.draw(&path, &Texture::Debug, ssaa);
-                canvas.draw(&path, &texture, ssaa);*/
+                canvas.draw(&path, &Texture::Debug, ssaa);
+                canvas.draw(&path, &texture, ssaa);
+                canvas.stroke(&path, 4.0, &green, ssaa);
 
                 canvas.draw(&text_shape, &white, ssaa);
-
-                canvas.stroke(&text_shape, 2.0, &Texture::Debug, ssaa);
             }
             let avg_ms = then.elapsed().as_micros() / num;
             let fps = 1000000 / avg_ms;

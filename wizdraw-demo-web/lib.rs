@@ -127,9 +127,9 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
 
     // let quad = shapes::quad(top_left, top_right, btm_left, btm_right);
     let mut shape = Path::default();
-    shape.segment(&Segment::new(top_left, top_right));
-    shape.segment(&Segment::new(top_right, btm_right));
-    shape.segment(&Segment::new(btm_right, btm_left));
+    shape.segment(Segment::new(top_left, top_right));
+    shape.segment(Segment::new(top_right, btm_right));
+    shape.segment(Segment::new(btm_right, btm_left));
     // shape.segment(&Segment::new(btm_left, top_left));
     shape.cubic_bezier([btm_left, btm_right, top_right, top_left], 8.0);
 
@@ -155,15 +155,15 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     let bri = Point::new(x + offset + 75.0, y + offset + 75.0);
 
     let mut dialog = Path::default();
-    dialog.segment(&Segment::new(bl2, tl2));
-    dialog.segment(&Segment::new(tr1, tl1));
-    dialog.segment(&Segment::new(tr2, br2));
-    dialog.segment(&Segment::new(bl1, br1));
+    dialog.segment(Segment::new(bl2, tl2));
+    dialog.segment(Segment::new(tr1, tl1));
+    dialog.segment(Segment::new(tr2, br2));
+    dialog.segment(Segment::new(bl1, br1));
     let rad = |degrees: f32| degrees.to_radians();
-    dialog.arc(&Arc::new(tli, 25.0, rad(180.0), rad(90.0), true));
-    dialog.arc(&Arc::new(tri, 25.0, rad(90.0), rad(0.0), true));
-    dialog.arc(&Arc::new(bri, 25.0, rad(0.0), rad(-90.0), true));
-    dialog.arc(&Arc::new(bli, 25.0, rad(-90.0), rad(-180.0), true));
+    dialog.arc(Arc::new(tli, 25.0, rad(180.0), rad(90.0), true));
+    dialog.arc(Arc::new(tri, 25.0, rad(90.0), rad(0.0), true));
+    dialog.arc(Arc::new(bri, 25.0, rad(0.0), rad(-90.0), true));
+    dialog.arc(Arc::new(bli, 25.0, rad(-90.0), rad(-180.0), true));
 
     wiz.draw(&dialog, &_purple, SsaaConfig::X4);
 

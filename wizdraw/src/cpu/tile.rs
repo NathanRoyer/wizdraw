@@ -9,14 +9,22 @@ pub struct TileIterator {
 }
 
 impl TileIterator {
-    pub fn new(fb_size: Vec2<usize>, ssaa: SsaaConfig) -> Self {
+    pub fn new(fb_size: Vec2<usize>, ssaa: SsaaConfig, bb: BoundingBox) -> Self {
         let tile_width = 256usize >> ssaa.log2_cols::<usize>();
         let tile_height = 128usize >> ssaa.log2_rows::<usize>();
+        let max = bb.max.map(|c| c.ceil() as usize);
+        let min = bb.min.map(|c| c.floor() as usize);
+
+        let tile_size = Vec2::new(tile_width, tile_height);
+        let shape_size = Vec2::new(max.x - min.x, max.y - min.y);
+
+        let fb_size = Vec2::min(fb_size, max);
+        let tile_size = Vec2::min(tile_size, shape_size);
 
         Self {
             fb_size,
-            next: Vec2::new(0, 0),
-            tile_size: Vec2::new(tile_width, tile_height),
+            next: min,
+            tile_size,
             ssaa,
         }
     }
@@ -107,13 +115,10 @@ impl Tile {
                 let mut cmp = 1;
 
                 for ssaa_y in 0..ssaa_rows {
-                    for ssaa_x in 0..ssaa_cols {
-                        let ssaa_offset = Vec2::new(ssaa_x, ssaa_y);
-                        let mask_p = mask_base + ssaa_offset;
-                        let hit = mask.get(mask_p.x, mask_p.y);
-                        hits = (hits << 1) | (hit as u32);
-                        cmp = cmp << 1;
-                    }
+                    let y = mask_base.y + ssaa_y;
+                    let ssaa_hit = mask.get(mask_base.x, y, ssaa_cols);
+                    hits = (hits << ssaa_cols) | ssaa_hit;
+                    cmp = cmp << ssaa_cols;
                 }
 
                 if hits != 0 {

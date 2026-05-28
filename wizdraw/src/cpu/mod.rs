@@ -45,8 +45,8 @@ impl Canvas {
         &self.pixels
     }
 
-    fn tiles(&self, ssaa: SsaaConfig) -> TileIterator {
-        TileIterator::new(self.size, ssaa)
+    fn tiles(&self, ssaa: SsaaConfig, bb: BoundingBox) -> TileIterator {
+        TileIterator::new(self.size, ssaa, bb)
     }
 }
 
@@ -100,36 +100,28 @@ impl super::Canvas for Canvas {
         let mut bb = BoundingBox::default();
         shape.draw(&mut bb);
 
-        for mut tile in self.tiles(ssaa) {
-            let sz_f32 = tile.tile_size.map(|c| c as f32);
-            let tile_max = tile.origin_f + sz_f32;
-
-            let x_overlap = (bb.max.x >= tile.origin_f.x) & (bb.min.x < tile_max.x);
-            let y_overlap = (bb.max.y >= tile.origin_f.y) & (bb.min.y < tile_max.y);
-
-            if !(x_overlap & y_overlap) {
-                continue;
-            }
-
+        for mut tile in self.tiles(ssaa, bb) {
             let mut path_impl = PathImpl {
                 mask: &mut self.mask,
+                mask_dirty: false,
                 ssaa,
                 tile_origin: tile.origin_f,
             };
 
             shape.draw(&mut path_impl);
 
-            if self.mask.unpack() {
+            if path_impl.mask_dirty {
+                self.mask.unpack();
                 tile.render(&mut self.pixels, self.size, &self.mask, texture, &self.bitmaps);
+                self.mask.clear();
             }
-
-            self.mask.clear();
         }
     }
 }
 
 struct PathImpl<'a> {
     mask: &'a mut Mask,
+    mask_dirty: bool,
     ssaa: SsaaConfig,
     tile_origin: Point,
 }
@@ -159,6 +151,7 @@ impl PathImpl<'_> {
         let vo_len: usize = self.ssaa.rows();
         let offsets = self.ssaa.offsets();
 
+        let mut dirty = false;
         let mut vo_index = 0;
         let mut row_v_offset = self.tile_origin.y;
 
@@ -176,6 +169,8 @@ impl PathImpl<'_> {
                     let x = collision_x - self.tile_origin.x;
 
                     if x >= 0.0 {
+                        dirty = true;
+
                         if x >= tile_width {
                             self.mask.toggle(255, mask_y);
                         } else {
@@ -192,6 +187,8 @@ impl PathImpl<'_> {
                 vo_index = 0;
             }
         }
+
+        self.mask_dirty |= dirty;
     }
 }
 
