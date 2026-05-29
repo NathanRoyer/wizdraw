@@ -22,6 +22,8 @@ mod ssaa;
 pub use path::{Path, Transformer};
 mod path;
 
+mod stroke;
+
 #[cfg(any(doc, feature = "shapes"))]
 pub mod shapes;
 

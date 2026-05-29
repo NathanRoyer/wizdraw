@@ -136,7 +136,8 @@ impl CurvatureMonitor {
     }
 
     fn finalize(&self) -> bool {
-        let sfsg = self.curvature_state == CURVATURE_SFSG;
+        let valid_states = [CURVATURE_INIT_1, CURVATURE_SFSG];
+        let sfsg = valid_states.contains(&self.curvature_state);
         let looped = self.prev_point == self.first_point;
         let points = [self.prev_proj, self.prev_point, self.first_proj];
         sfsg && looped && aligned(points)

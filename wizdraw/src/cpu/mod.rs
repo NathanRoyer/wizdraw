@@ -244,16 +244,15 @@ pub(crate) fn cos_range(min_angle_magic: u32, max_angle_magic: u32, row_pos: boo
 }
 
 fn arc_collision(row: f32, arc: &Arc) -> Collisions {
-    type Precise = f64;
     let sin_radius = row - arc.center.y;
 
     if arc.radius <= 0.0 || !(-arc.radius..=arc.radius).contains(&sin_radius) {
         return [None, None];
     }
 
-    let precise_radius = arc.radius as Precise;
-    let sin = (sin_radius as Precise) / precise_radius;
-    let r_cos = Precise::sqrt(1.0 - sin * sin);
+    let radius = arc.radius as f64;
+    let sin = (sin_radius as f64) / radius;
+    let r_cos = f64::sqrt(1.0 - sin * sin);
     let l_cos = -r_cos;
 
     let range = cos_range(arc.min_angle_magic, arc.max_angle_magic, sin < 0.0);
@@ -265,12 +264,12 @@ fn arc_collision(row: f32, arc: &Arc) -> Collisions {
     let mut r_collision = None;
 
     if l_col {
-        let offset = arc.center.x + (l_cos * precise_radius) as f32;
+        let offset = arc.center.x + (l_cos * radius) as f32;
         l_collision = Some(offset);
     }
 
     if r_col {
-        let offset = arc.center.x + (r_cos * precise_radius) as f32;
+        let offset = arc.center.x + (r_cos * radius) as f32;
         r_collision = Some(offset);
     }
 

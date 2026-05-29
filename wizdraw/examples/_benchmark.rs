@@ -20,26 +20,26 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
     let max_error = 2.0;
 
     path.cubic_bezier([
-        Point::new(0.250 * wf, 0.500 * hf),
-        Point::new(0.250 * wf, 0.100 * hf),
-        Point::new(0.750 * wf, 0.100 * hf),
-        Point::new(0.750 * wf, 0.500 * hf),
+        Point::new(0.25 * wf, 0.50 * hf),
+        Point::new(0.25 * wf, 0.10 * hf),
+        Point::new(0.75 * wf, 0.10 * hf),
+        Point::new(0.75 * wf, 0.50 * hf),
     ], max_error);
 
     path.cubic_bezier([
-        Point::new(0.750 * wf, 0.500 * hf),
-        Point::new(0.750 * wf, 0.900 * hf),
-        Point::new(0.250 * wf, 0.900 * hf),
-        Point::new(0.250 * wf, 0.500 * hf),
+        Point::new(0.75 * wf, 0.50 * hf),
+        Point::new(0.75 * wf, 0.90 * hf),
+        Point::new(0.25 * wf, 0.90 * hf),
+        Point::new(0.25 * wf, 0.50 * hf),
     ], max_error);
 
     let quad = wizdraw::shapes::Polygon {
         radius: 20.0,
         points: &[
-            Point::new(0.12 * wf, 0.1 * hf),
-            Point::new(0.4 * wf, 0.1 * hf),
-            Point::new(0.2 * wf, 0.25 * hf),
-            Point::new(0.15 * wf, 0.4 * hf),
+            Point::new(0.12 * wf, 0.10 * hf),
+            Point::new(0.40 * wf, 0.10 * hf),
+            Point::new(0.20 * wf, 0.25 * hf),
+            Point::new(0.15 * wf, 0.40 * hf),
         ],
     };
 
