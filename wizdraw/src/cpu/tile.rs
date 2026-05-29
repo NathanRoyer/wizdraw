@@ -1,4 +1,3 @@
-use rgb::RGBA;
 use super::*;
 
 pub struct TileIterator {
@@ -112,37 +111,36 @@ impl Tile {
                 }
 
                 let mut hits = 0;
-                let mut cmp = 1;
 
                 for ssaa_y in 0..ssaa_rows {
                     let y = mask_base.y + ssaa_y;
                     let ssaa_hit = mask.get(mask_base.x, y, ssaa_cols);
                     hits = (hits << ssaa_cols) | ssaa_hit;
-                    cmp = cmp << ssaa_cols;
                 }
 
                 if hits != 0 {
-                    let mut src = RGBA::<u16>::new(0, 0, 0, 0);
+                    let mut src = Color16::new(0, 0, 0, 0);
 
                     for ssaa_y in 0..ssaa_rows {
                         for ssaa_x in 0..ssaa_cols {
-                            cmp = cmp >> 1;
-
-                            if (hits & cmp) > 0 {
-                                let (v_offset, h_offsets) = offsets[ssaa_y as usize];
-                                let h_offset = h_offsets[ssaa_x as usize];
-                                let point = subp_base + Vec2::new(h_offset, v_offset);
-                                src += texture.sample(point, bitmaps);
-                            }
+                            let (v_offset, h_offsets) = offsets[ssaa_y as usize];
+                            let h_offset = h_offsets[ssaa_x as usize];
+                            let point = subp_base + Vec2::new(h_offset, v_offset);
+                            src += texture.sample(point, bitmaps);
                         }
                     }
 
                     // divide by num_subpx
                     src = const_ssaa!(self.ssaa, src, /);
 
-                    let px_i = fb_line_offset + x;
-                    let dst = &mut pixels[px_i];
-                    *dst = blend(src, *dst);
+                    src.a *= hits.count_ones() as u16;
+                    src.a = const_ssaa!(self.ssaa, src.a, /);
+
+                    if src.a != 0 {
+                        let px_i = fb_line_offset + x;
+                        let dst = &mut pixels[px_i];
+                        blend(src, dst);
+                    }
                 }
 
                 mask_base.x = mask_base.x.wrapping_add(ssaa_cols);
@@ -154,20 +152,22 @@ impl Tile {
 }
 
 #[inline(always)]
-fn blend(src: Color16, dst: Color) -> Color {
-    match src.a {
-        255 => return src.map(|c| c as u8),
-        0 => return dst,
-        _ => (),
-    };
-
-    let dst = rgb::RGBA::new(dst.r as u16, dst.g as u16, dst.b as u16, dst.a as u16);
+fn blend(src: Color16, dst: &mut Color) {
+    if src.a == 255 {
+        *dst = src.map(|c| c as u8);
+        return;
+    }
 
     let dst_a = 255u16 - src.a;
-    let out_r = (src.r * src.a + dst.r * dst_a) / 255u16;
-    let out_g = (src.g * src.a + dst.g * dst_a) / 255u16;
-    let out_b = (src.b * src.a + dst.b * dst_a) / 255u16;
-    let out_a = (src.a * src.a + dst.a * dst_a) / 255u16;
 
-    Color::new(out_r as u8, out_g as u8, out_b as u8, out_a as u8)
+    let lerp = |src_c: u16, dst_c: u8| {
+        let dst_c = dst_c as u16;
+        let sum = src_c * src.a + dst_c * dst_a;
+        (sum / 255u16) as u8
+    };
+
+    dst.r = lerp(src.r, dst.r);
+    dst.g = lerp(src.g, dst.g);
+    dst.b = lerp(src.b, dst.b);
+    dst.a = lerp(src.a, dst.a);
 }
