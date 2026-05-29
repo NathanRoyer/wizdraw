@@ -33,6 +33,16 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
         Point::new(0.250 * wf, 0.500 * hf),
     ], max_error);
 
+    let quad = wizdraw::shapes::Polygon {
+        radius: 20.0,
+        points: &[
+            Point::new(0.12 * wf, 0.1 * hf),
+            Point::new(0.4 * wf, 0.1 * hf),
+            Point::new(0.2 * wf, 0.25 * hf),
+            Point::new(0.15 * wf, 0.4 * hf),
+        ],
+    };
+
     let mut font = wizdraw::text::Font::new(NOTO_TTF);
     let font_size = 300.0;
     let text_width = font.text_width("wizdraw!", font_size);
@@ -65,10 +75,11 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
             let then = Instant::now();
             let num = 50;
             for _ in 0..num {
+                canvas.draw(&quad, &Texture::Debug, ssaa);
+                canvas.stroke(&quad, 4.0, &green, ssaa);
                 canvas.draw(&path, &Texture::Debug, ssaa);
                 canvas.draw(&path, &texture, ssaa);
                 canvas.stroke(&path, 4.0, &green, ssaa);
-
                 canvas.draw(&text_shape, &white, ssaa);
             }
             let avg_ms = then.elapsed().as_micros() / num;

@@ -1,120 +1,132 @@
 use super::*;
 
 #[derive(Copy, Clone, Debug)]
-pub struct Corner {
-    /// Position
-    p: Point,
-    /// Radius
-    r: f32,
+pub struct Polygon<P: AsRef<[Point]>> {
+    pub radius: f32,
+    pub points: P,
 }
 
-pub fn corner(p: Point, r: f32) -> Corner {
-    Corner { p, r }
+fn corner_arc_points(points: [Point; 3], radius: f64) -> Option<[Point64; 4]> {
+    if radius == 0.0 {
+        return None;
+    }
+
+    let to_f64 = |float: f32| float as f64;
+    let [a, b, c] = points.map(|coord| coord.map(to_f64));
+
+    let (b_to_a, b_to_c) = (a - b, c - b);
+    let b_to_a_len = b_to_a.magnitude(); // calls f64::sqrt
+    let b_to_c_len = b_to_c.magnitude(); // calls f64::sqrt
+    let b_to_a_norm = b_to_a / b_to_a_len;
+    let b_to_c_norm = b_to_c / b_to_c_len;
+
+    let b_to_d = (b_to_a_norm + b_to_c_norm) / 2.0;
+
+    if b_to_d.x == 0.0 && b_to_d.y == 0.0 {
+        return None;
+    }
+
+    let b_to_d_norm = b_to_d.normalized(); // calls f64::sqrt
+
+    let mut b_to_d_nrot = rotate_90deg(b_to_d_norm);
+    let mut cos_adj_hyp = Vec2::dot(b_to_d_nrot, b_to_c_norm);
+
+    // todo optimize
+    if cos_adj_hyp < 0.0 {
+        b_to_d_nrot = -b_to_d_nrot;
+        cos_adj_hyp = Vec2::dot(b_to_d_nrot, b_to_c_norm);
+    }
+
+    if cos_adj_hyp == 0.0 {
+        return None;
+    }
+
+    let hyp_len = radius / cos_adj_hyp;
+    let center = b + b_to_d_norm * hyp_len;
+    let j = center - b_to_d_norm * radius;
+
+    let cos_adj_hyp = Vec2::dot(b_to_d_norm, b_to_c_norm);
+    let adj_len = cos_adj_hyp * hyp_len;
+    let double_adj_len = adj_len * 2.0;
+
+    // this cancels artefacts ocurring when a point is too close to an adjacent segment
+    if double_adj_len > b_to_a_len || double_adj_len > b_to_c_len {
+        return None;
+    }
+
+    let i = b + b_to_a_norm * adj_len;
+    let k = b + b_to_c_norm * adj_len;
+
+    Some([i, j, k, center])
+}
+
+fn draw_quarter(points: [Point; 3], radius: f32, api: &mut dyn PathApi) {
+    let [a, b, c] = points;
+
+    let mid_ab = (a + b) / 2.0;
+    let mid_bc = (b + c) / 2.0;
+    let radius64 = radius as f64;
+
+    if let Some([i, j, k, center]) = corner_arc_points(points, radius64) {
+        api.segment((mid_ab, i.map(|c| c as f32)).into());
+        api.arc(Arc::from_points2([i, j, k], center, radius64));
+        api.segment((k.map(|c| c as f32), mid_bc).into());
+    } else {
+        api.segment((mid_ab, b).into());
+        api.segment((b, mid_bc).into());
+    }
+}
+
+impl<P: AsRef<[Point]>> Shape for Polygon<P> {
+    fn draw(&self, api: &mut dyn PathApi) {
+        let points = self.points.as_ref();
+        let len = points.len();
+        assert!(len >= 4);
+
+        for trio in points.array_windows() {
+            draw_quarter(*trio, self.radius, api);
+        }
+
+        let a = points[0];
+        let b = points[1];
+        let y = points[len - 2];
+        let z = points[len - 1];
+
+        draw_quarter([y, z, a], self.radius, api);
+        draw_quarter([z, a, b], self.radius, api);
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
-struct Segment {
-    s: Point,
-    e: Point,
+pub struct Rectangle {
+    pub radius: f32,
+    pub points: [Point; 2],
 }
 
-fn segment(s: Point, e: Point) -> Segment {
-    Segment { s, e }
+impl Rectangle {
+    pub fn new(points: [Point; 2]) -> Self {
+        Self::rounded(points, 0.0)
+    }
+
+    pub fn rounded(points: [Point; 2], radius: f32) -> Self {
+        Self { points, radius }
+    }
 }
 
-impl Segment {
-    fn unit(self) -> Vec2<f32> {
-        match self.e == self.s {
-            true => Vec2::new(0.0, 0.0),
-            false => (self.e - self.s).normalized(),
+impl From<Rectangle> for Polygon<[Point; 4]> {
+    fn from(rectangle: Rectangle) -> Self {
+        let [a, c] = rectangle.points;
+        let b = Point::new(c.x, a.y);
+        let d = Point::new(a.x, c.y);
+        Self {
+            radius: rectangle.radius,
+            points: [a, b, c, d],
         }
     }
 }
 
-impl From<Segment> for CubicBezier {
-    fn from(segment: Segment) -> Self {
-        CubicBezier {
-            c1: segment.s,
-            c2: segment.s,
-            c3: segment.e,
-            c4: segment.e,
-        }
+impl Shape for Rectangle {
+    fn draw(&self, api: &mut dyn PathApi) {
+        Polygon::from(*self).draw(api);
     }
-}
-
-fn quad_segments(
-    top_left: Point,
-    top_right: Point,
-    btm_left: Point,
-    btm_right: Point,
-) -> [Segment; 4] {
-    let tl_to_tr = segment(top_left, top_right);
-    let tr_to_br = segment(top_right, btm_right);
-    let br_to_bl = segment(btm_right, btm_left);
-    let bl_to_tl = segment(btm_left, top_left);
-
-    [tl_to_tr, tr_to_br, br_to_bl, bl_to_tl]
-}
-
-pub fn quad(
-    top_left: Point,
-    top_right: Point,
-    btm_left: Point,
-    btm_right: Point,
-) -> [CubicBezier; 4] {
-    quad_segments(top_left, top_right, btm_left, btm_right).map(CubicBezier::from)
-}
-
-pub fn rectangle(origin: Point, size: Vec2<f32>) -> [CubicBezier; 4] {
-    let top_left = origin;
-    let top_right = Point::new(origin.x + size.x, origin.y);
-    let btm_left = Point::new(origin.x, origin.y + size.y);
-    let btm_right = origin + size;
-    quad(top_left, top_right, btm_left, btm_right)
-}
-
-fn corner_bezier(corner: Corner, prev: Segment, next: Segment) -> CubicBezier {
-    CubicBezier {
-        c1: corner.p - prev.unit() * corner.r,
-        c2: corner.p,
-        c3: corner.p,
-        c4: corner.p + next.unit() * corner.r,
-    }
-}
-
-pub fn rounded_quad(
-    top_left: Corner,
-    top_right: Corner,
-    btm_left: Corner,
-    btm_right: Corner,
-) -> [CubicBezier; 8] {
-    let segments = quad_segments(top_left.p, top_right.p, btm_left.p, btm_right.p);
-    let [tl_to_tr, tr_to_br, br_to_bl, bl_to_tl] = segments;
-
-    let tl_corner = corner_bezier(top_left, bl_to_tl, tl_to_tr);
-    let tr_corner = corner_bezier(top_right, tl_to_tr, tr_to_br);
-    let br_corner = corner_bezier(btm_right, tr_to_br, br_to_bl);
-    let bl_corner = corner_bezier(btm_left, br_to_bl, bl_to_tl);
-
-    let tl_to_tr = segment(tl_corner.c4, tr_corner.c1).into();
-    let tr_to_br = segment(tr_corner.c4, br_corner.c1).into();
-    let br_to_bl = segment(br_corner.c4, bl_corner.c1).into();
-    let bl_to_tl = segment(bl_corner.c4, tl_corner.c1).into();
-
-    [tl_corner, tl_to_tr, tr_corner, tr_to_br, br_corner, br_to_bl, bl_corner, bl_to_tl]
-}
-
-pub fn rounded_quad_uniradius(
-    top_left: Point,
-    top_right: Point,
-    btm_left: Point,
-    btm_right: Point,
-    radius: f32,
-) -> [CubicBezier; 8] {
-    rounded_quad(
-        corner(top_left, radius),
-        corner(top_right, radius),
-        corner(btm_left, radius),
-        corner(btm_right, radius),
-    )
 }

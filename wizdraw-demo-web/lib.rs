@@ -130,14 +130,29 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     shape.segment(Segment::new(top_left, top_right));
     shape.segment(Segment::new(top_right, btm_right));
     shape.segment(Segment::new(btm_right, btm_left));
-    // shape.segment(&Segment::new(btm_left, top_left));
-    shape.cubic_bezier([btm_left, btm_right, top_right, top_left], 8.0);
+    shape.segment(Segment::new(btm_left, top_left));
+    // shape.cubic_bezier([btm_left, btm_right, top_right, top_left], 8.0);
 
     wiz.clear();
-    wiz.draw(&shape, &Texture::Debug, SsaaConfig::None);
-    wiz.draw(&shape, &texture, SsaaConfig::None);
+    // wiz.draw(&shape, &Texture::Debug, SsaaConfig::None);
+    // wiz.draw(&shape, &texture, SsaaConfig::None);
 
-    let offset = -50.0;
+    let poly = [
+        Point::new(0.12 * wf, 0.1 * hf),
+        Point::new(0.4 * wf, 0.15 * hf),
+        Point::new(x, y),
+        Point::new(0.5 * wf, 0.5 * hf),
+        Point::new(0.15 * wf, 0.3 * hf),
+    ];
+
+    let quad = wizdraw::shapes::Polygon {
+        radius: 5.0,
+        points: &poly,
+    };
+
+    wiz.draw(&quad, &_purple, SsaaConfig::X4);
+
+    /* let offset = -50.0;
 
     let tl1 = Point::new(x + offset + 25.0, y + offset);
     let tr1 = Point::new(x + offset + 75.0, y + offset);
@@ -165,7 +180,7 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     dialog.arc(Arc::new(bri, 25.0, rad(0.0), rad(-90.0), true));
     dialog.arc(Arc::new(bli, 25.0, rad(-90.0), rad(-180.0), true));
 
-    wiz.draw(&dialog, &_purple, SsaaConfig::X4);
+    wiz.draw(&dialog, &_purple, SsaaConfig::X4);*/
 
     if cpu {
         let pixels = state.cpu.pixels();

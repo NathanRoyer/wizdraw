@@ -134,113 +134,31 @@ impl<S: Shape> Shape for Transformer<S> {
 
 /////////////////////////////////////////////////////////
 
-pub struct InitialStriker<S: Shape> {
-    pub shape: S,
-    pub width: f32,
-}
-
-struct StrikerApi<'a, S: Shape> {
-    inner: &'a InitialStriker<S>,
-    real_api: &'a mut dyn PathApi,
-}
-
-impl<S: Shape> PathApi for StrikerApi<'_, S> {
-    fn segment(&mut self, mut segment: Segment) {
-        if segment.a == segment.b {
-            return;
-        }
-
-        let a_to_b = segment.b - segment.a;
-        let rotated = Vec2::new(-a_to_b.y, a_to_b.x);
-        let normal = rotated.normalized() * self.inner.width;
-
-        let mut clone = segment;
-        clone.a += normal;
-        clone.b += normal;
-        self.real_api.segment(clone);
-
-        segment.a -= normal;
-        segment.b -= normal;
-        self.real_api.segment(segment);
-
-        self.real_api.segment((segment.a, clone.a).into());
-        self.real_api.segment((segment.b, clone.b).into());
-    }
-
-    fn arc(&mut self, mut arc: Arc) {
-        arc.radius += self.inner.width;
-        let [big_start, big_stop] = arc.ends();
-        self.real_api.arc(arc);
-
-        arc.radius -= self.inner.width;
-        arc.radius -= self.inner.width;
-        let [lil_start, lil_stop] = arc.ends();
-        self.real_api.arc(arc);
-
-        self.real_api.segment((big_start, lil_start).into());
-        self.real_api.segment((big_stop, lil_stop).into());
-    }
-}
-
-impl<S: Shape> Shape for InitialStriker<S> {
-    fn draw(&self, api: &mut dyn PathApi) {
-        let mut wrapper = StrikerApi {
-            inner: self,
-            real_api: api,
-        };
-
-        self.shape.draw(&mut wrapper);
-    }
-}
-
-/////////////////////////////////////////////////////////
-
 impl Arc {
-    pub fn from_points(points: [Point; 3]) -> Option<Self> {
-        let to_f64 = |float: f32| float as f64;
+    pub fn from_points2<F: Into<f64>>(points: [Vec2<F>; 3], center: Vec2<F>, radius: F) -> Self {
+        let to_f64 = |float: F| float.into();
         let [a, b, c] = points.map(|coord| coord.map(to_f64));
+        let center = center.map(to_f64);
+        let radius = radius.into();
 
-        let a_to_b = b - a;
-        let b_to_c = c - b;
-        let mid_ab = (a + b) / 2.0;
-        let mid_bc = (b + c) / 2.0;
-        let ab_normal = Vec2::new(-a_to_b.y, a_to_b.x);
-        let bc_normal = Vec2::new(-b_to_c.y, b_to_c.x);
+        let center_to_a = a - center; // (-1, -1)
+        let center_to_b = b - center; // (0, -1)
+        let center_to_c = c - center; // (1, -1)
 
-        let mid_ab_n = mid_ab + ab_normal;
-        let mid_bc_n = mid_bc + bc_normal;
-        let ab_m_abn = mid_ab - mid_ab_n;
-        let ab_m_bc = mid_ab - mid_bc;
-        let factor = mid_bc - mid_bc_n;
+        let c2a_cos = center_to_a.x / radius; // -0.707
+        let c2b_cos = center_to_b.x / radius; // 0
+        let c2c_cos = center_to_c.x / radius; // +0.707
 
-        let m = ab_m_bc.x * factor.y - ab_m_bc.y * factor.x;
-        let n = ab_m_abn.x * factor.y - ab_m_abn.y * factor.x;
-
-        if n == 0.0 {
-            return None;
-        }
-
-        let center = mid_ab + ab_normal * (m / n);
-
-        let center_to_a = a - center;
-        let center_to_b = b - center;
-        let center_to_c = c - center;
-
-        let radius = center_to_b.magnitude();
-
-        // negation: screen coordinates
-        let c2a_cos = center_to_a.x / radius;
-        let c2b_cos = center_to_b.x / radius;
-        let c2c_cos = center_to_c.x / radius;
         // y is positive => angle is negative
-        let c2a_neg = center_to_a.y > 0.0;
-        let c2b_neg = center_to_b.y > 0.0;
-        let c2c_neg = center_to_c.y > 0.0;
+        let c2a_neg = center_to_a.y > 0.0; // false
+        let c2b_neg = center_to_b.y > 0.0; // false
+        let c2c_neg = center_to_c.y > 0.0; // false
 
+        // is the angle of c2a inferior to the angle of c2c
         let sorted = match (c2a_neg, c2c_neg) {
             (true, false) => true,
-            (true, true) => c2a_cos > c2c_cos,
-            (false, false) => c2a_cos < c2c_cos,
+            (true, true) => c2a_cos < c2c_cos,
+            (false, false) => c2a_cos > c2c_cos,
             (false, true) => false,
         };
 
@@ -257,24 +175,46 @@ impl Arc {
         let range = cpu::cos_range(min_angle_magic, max_angle_magic, !c2b_neg);
         let wraps = !range.contains(&c2b_cos);
 
-        Some(Self {
+        Self {
             center: center.map(to_f32),
             radius: radius as f32,
             min_angle_magic,
             max_angle_magic,
             wraps,
-        })
+        }
+    }
+
+    pub fn from_points(points: [Point; 3]) -> Option<Self> {
+        let to_f64 = |float: f32| float as f64;
+        let [a, b, c] = points.map(|coord| coord.map(to_f64));
+
+        let a_to_b = b - a;
+        let b_to_c = c - b;
+        let mid_ab = (a + b) / 2.0;
+        let mid_bc = (b + c) / 2.0;
+        let ab_90deg = rotate_90deg(a_to_b);
+        let bc_90deg = rotate_90deg(b_to_c);
+
+        let mid_ab_n = mid_ab + ab_90deg;
+        let mid_bc_n = mid_bc + bc_90deg;
+        let ab_m_abn = mid_ab - mid_ab_n;
+        let ab_m_bc = mid_ab - mid_bc;
+        let factor = mid_bc - mid_bc_n;
+
+        let m = ab_m_bc.x * factor.y - ab_m_bc.y * factor.x;
+        let n = ab_m_abn.x * factor.y - ab_m_abn.y * factor.x;
+
+        if n == 0.0 {
+            return None;
+        }
+
+        let center = mid_ab + ab_90deg * (m / n);
+        let radius = (b - center).magnitude();
+        Some(Self::from_points2([a, b, c], center, radius))
     }
 }
 
 /////////////////////////////////////////////////////////
-
-fn aligned(points: [Point; 3]) -> bool {
-    let [a, b, c] = points;
-    let m = (b.y - a.y) * (c.x - a.x);
-    let n = (c.y - a.y) * (b.x - a.x);
-    (m - n).abs() < 0.0001
-}
 
 impl Path {
     pub fn cubic_bezier(&mut self, points: [Point; 4], max_error: f32) {

@@ -22,8 +22,8 @@ mod ssaa;
 pub use path::{Path, Transformer};
 mod path;
 
-// #[cfg(any(doc, feature = "shapes"))]
-// pub mod shapes;
+#[cfg(any(doc, feature = "shapes"))]
+pub mod shapes;
 
 /// Implementations of [`Canvas`] using only the CPU
 pub mod cpu;
@@ -85,6 +85,8 @@ pub type Color = rgb::RGBA<u8>;
 
 /// Pixel or Subpixel coordinates
 pub type Point = Vec2<f32>;
+
+type Point64 = Vec2<f64>;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Arc {
@@ -179,13 +181,13 @@ impl Arc {
         let mut min_sin = f64::sqrt(1.0 - min_cos * min_cos);
         let mut max_sin = f64::sqrt(1.0 - max_cos * max_cos);
 
-        if min_neg { min_sin = -min_sin; }
-        if max_neg { max_sin = -max_sin; }
+        if !min_neg { min_sin = -min_sin; }
+        if !max_neg { max_sin = -max_sin; }
 
         // screen coordinates
-        let neg_radius = -self.radius as f64;
-        let min_angle_y = self.center.y + (neg_radius * min_sin) as f32;
-        let max_angle_y = self.center.y + (neg_radius * max_sin) as f32;
+        let radius = self.radius as f64;
+        let min_angle_y = self.center.y + (radius * min_sin) as f32;
+        let max_angle_y = self.center.y + (radius * max_sin) as f32;
 
         // adding a bias for safety regarding sin results
         let bias = 1.0;
@@ -292,37 +294,6 @@ impl Shape for Disk {
     }
 }
 
-struct StrikerApi2<'a, C: Canvas + ?Sized> {
-    canvas: &'a mut C,
-    texture: &'a Texture<'a>,
-    ssaa: SsaaConfig,
-    width: f32,
-}
-
-impl<C: Canvas + ?Sized> StrikerApi2<'_, C> {
-    fn point(&mut self, point: Point) {
-        let disk = Disk {
-            center: point,
-            radius: self.width,
-        };
-
-        self.canvas.draw(&disk, self.texture, self.ssaa);
-    }
-}
-
-impl<C: Canvas + ?Sized> PathApi for StrikerApi2<'_, C> {
-    fn segment(&mut self, segment: Segment) {
-        self.point(segment.a);
-        self.point(segment.b);
-    }
-
-    fn arc(&mut self, arc: Arc) {
-        let [a, b] = arc.ends();
-        self.point(a);
-        self.point(b);
-    }
-}
-
 /// The trait that rendering backends must implement
 pub trait Canvas {
     fn framebuffer_size(&self) -> Vec2<usize>;
@@ -334,22 +305,8 @@ pub trait Canvas {
     fn clear(&mut self);
     fn draw(&mut self, shape: &dyn Shape, texture: &Texture, ssaa: SsaaConfig);
 
-    fn stroke<S: Shape>(&mut self, shape: &S, width: f32, texture: &Texture, ssaa: SsaaConfig) {
-        let striker = path::InitialStriker {
-            shape,
-            width,
-        };
-
-        self.draw(&striker, texture, ssaa);
-
-        let mut striker2 = StrikerApi2 {
-            canvas: self,
-            texture,
-            ssaa,
-            width,
-        };
-
-        shape.draw(&mut striker2);
+    fn stroke(&mut self, shape: &dyn Shape, width: f32, texture: &Texture, ssaa: SsaaConfig) {
+        stroke::stroke(self, shape, width, texture, ssaa);
     }
 }
 
@@ -408,4 +365,15 @@ impl PathApi for BoundingBox {
         self.check(min);
         self.check(max);
     }
+}
+
+fn rotate_90deg<T: std::ops::Neg<Output = T>>(vector: Vec2<T>) -> Vec2<T> {
+    Vec2::new(-vector.y, vector.x)
+}
+
+fn aligned(points: [Point; 3]) -> bool {
+    let [a, b, c] = points;
+    let m = (b.y - a.y) * (c.x - a.x);
+    let n = (c.y - a.y) * (b.x - a.x);
+    (m - n).abs() < 0.01
 }

@@ -223,6 +223,8 @@ pub(crate) fn cos_range(min_angle_magic: u32, max_angle_magic: u32, row_pos: boo
     let (max_cos, max_neg) = decode_magic(max_angle_magic);
     let fake = 2.0;
 
+    // row_pos = row < arc.center.y (its circle position is a positive angle)
+
     let (cos_a, cos_b) = match (min_neg, max_neg, row_pos) {
         (true, true, true) => (fake, fake), // no intersection
         (true, true, false) => (min_cos, max_cos),
