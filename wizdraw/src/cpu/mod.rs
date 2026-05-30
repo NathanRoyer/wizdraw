@@ -218,20 +218,22 @@ fn segment_collision(row: f32, segment: &Segment) -> Collisions {
     [Some(offset), None]
 }
 
+const FAKE_COS: f64 = 2.0;
+pub(crate) const NO_COLLISION: RangeInclusive<f64> = FAKE_COS..=FAKE_COS;
+
 pub(crate) fn cos_range(min_angle_magic: u32, max_angle_magic: u32, row_pos: bool) -> RangeInclusive<f64> {
     let (min_cos, min_neg) = decode_magic(min_angle_magic);
     let (max_cos, max_neg) = decode_magic(max_angle_magic);
-    let fake = 2.0;
 
     // row_pos = row < arc.center.y (its circle position is a positive angle)
 
     let (cos_a, cos_b) = match (min_neg, max_neg, row_pos) {
-        (true, true, true) => (fake, fake), // no intersection
+        (true, true, true) => (FAKE_COS, FAKE_COS), // no intersection
         (true, true, false) => (min_cos, max_cos),
         (true, false, true) => (1.0, max_cos),
         (true, false, false) => (min_cos, 1.0),
         (false, false, true) => (min_cos, max_cos),
-        (false, false, false) => (fake, fake), // no intersection
+        (false, false, false) => (FAKE_COS, FAKE_COS), // no intersection
         (false, true, _) => unreachable!(),
     };
 
@@ -250,12 +252,17 @@ fn arc_collision(row: f32, arc: &Arc) -> Collisions {
         return [None, None];
     }
 
+    let range = cos_range(arc.min_angle_magic, arc.max_angle_magic, sin_radius < 0.0);
+
+    if range == NO_COLLISION {
+        return [None, None];
+    }
+
     let radius = arc.radius as f64;
     let sin = (sin_radius as f64) / radius;
+
     let r_cos = f64::sqrt(1.0 - sin * sin);
     let l_cos = -r_cos;
-
-    let range = cos_range(arc.min_angle_magic, arc.max_angle_magic, sin < 0.0);
 
     let r_col = range.contains(&r_cos) ^ arc.wraps;
     let l_col = range.contains(&l_cos) ^ arc.wraps;
