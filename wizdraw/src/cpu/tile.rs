@@ -91,7 +91,7 @@ impl Tile {
         let y_max = y_min + self.tile_size.y;
 
         let mut subp_base = Vec2::default();
-        let mut mask_base = Vec2::default();
+        let mut mask_base = Vec2::<u8>::default();
 
         for y in y_min..y_max {
             let fb_line_offset = y * fb_size.x;
@@ -99,6 +99,11 @@ impl Tile {
 
             if y >= fb_size.y {
                 break;
+            }
+
+            if mask.empty_rows(mask_base.y, ssaa_rows) {
+                mask_base.y = mask_base.y.wrapping_add(ssaa_rows);
+                continue;
             }
 
             mask_base.x = 0;
@@ -118,20 +123,26 @@ impl Tile {
                     hits = (hits << ssaa_cols) | ssaa_hit;
                 }
 
+                mask_base.x = mask_base.x.wrapping_add(ssaa_cols);
+
                 if hits != 0 {
                     let mut src = Color16::new(0, 0, 0, 0);
 
-                    for ssaa_y in 0..ssaa_rows {
-                        for ssaa_x in 0..ssaa_cols {
-                            let (v_offset, h_offsets) = offsets[ssaa_y as usize];
-                            let h_offset = h_offsets[ssaa_x as usize];
-                            let point = subp_base + Vec2::new(h_offset, v_offset);
-                            src += texture.sample(point, bitmaps);
+                    if let Texture::SolidColor(color) = texture {
+                        src = color.map(|c| c as u16);
+                    } else {
+                        for ssaa_y in 0..ssaa_rows {
+                            for ssaa_x in 0..ssaa_cols {
+                                let (v_offset, h_offsets) = offsets[ssaa_y as usize];
+                                let h_offset = h_offsets[ssaa_x as usize];
+                                let point = subp_base + Vec2::new(h_offset, v_offset);
+                                src += texture.sample(point, bitmaps);
+                            }
                         }
-                    }
 
-                    // divide by num_subpx
-                    src = const_ssaa!(self.ssaa, src, /);
+                        // divide by num_subpx
+                        src = const_ssaa!(self.ssaa, src, /);
+                    }
 
                     src.a *= hits.count_ones() as u16;
                     src.a = const_ssaa!(self.ssaa, src.a, /);
@@ -142,8 +153,6 @@ impl Tile {
                         blend(src, dst);
                     }
                 }
-
-                mask_base.x = mask_base.x.wrapping_add(ssaa_cols);
             }
 
             mask_base.y = mask_base.y.wrapping_add(ssaa_rows);

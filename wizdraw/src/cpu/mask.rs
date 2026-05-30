@@ -33,6 +33,12 @@ impl Mask {
         (self.rows[dword] >> shift) & bitmask
     }
 
+    pub fn empty_rows(&self, y: u8, num: u8) -> bool {
+        let start = y as usize * 8;
+        let stop = start + (num as usize * 8);
+        self.rows[start..stop].iter().all(|dword| *dword == 0)
+    }
+
     pub fn unpack(&mut self) {
         for row in self.rows.chunks_mut(8).rev() {
             let mut drawing = false;
