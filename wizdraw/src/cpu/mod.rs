@@ -1,7 +1,10 @@
 use alloc::{vec, vec::Vec, boxed::Box};
+use core::marker::PhantomData;
 
 use rgb::ComponentMap;
 use super::*;
+
+use crate::ssaa::*;
 
 mod mask;
 mod tile;
@@ -52,8 +55,35 @@ impl Canvas {
         &self.pixels
     }
 
-    fn tiles(&self, ssaa: SsaaConfig, bb: BoundingBox) -> TileIterator {
-        TileIterator::new(self.size, ssaa, bb)
+    fn tiles<S: ConstSsaa>(&self, bb: BoundingBox) -> TileIterator<S> {
+        TileIterator::new(self.size, bb)
+    }
+
+    fn fill<S: ConstSsaa>(&mut self, shape: &dyn Shape, bb: Option<BoundingBox>, texture: &Texture) {
+        let bb = match bb {
+            Some(bb) => bb,
+            None => shape.bounding_box(),
+        };
+
+        let tile_iter = self.tiles::<S>(bb);
+        let stop = tile_iter.stop();
+
+        for mut tile in tile_iter {
+            let mut path_impl = PathImpl::<S> {
+                mask: &mut self.mask,
+                mask_dirty: false,
+                tile_origin: tile.origin_f,
+                _s: PhantomData,
+            };
+
+            shape.draw(&mut path_impl);
+
+            if path_impl.mask_dirty {
+                self.mask.unpack();
+                tile.render(&mut self.pixels, self.size.x, stop, &self.mask, texture, &self.bitmaps);
+                self.mask.clear();
+            }
+        }
     }
 }
 
@@ -104,38 +134,21 @@ impl super::Canvas for Canvas {
     }
 
     fn fill(&mut self, shape: &dyn Shape, bb: Option<BoundingBox>, texture: &Texture, ssaa: SsaaConfig) {
-        let bb = match bb {
-            Some(bb) => bb,
-            None => shape.bounding_box(),
-        };
-
-        let tile_iter = self.tiles(ssaa, bb);
-        let stop = tile_iter.stop();
-
-        for mut tile in tile_iter {
-            let mut path_impl = PathImpl {
-                mask: &mut self.mask,
-                mask_dirty: false,
-                ssaa,
-                tile_origin: tile.origin_f,
-            };
-
-            shape.draw(&mut path_impl);
-
-            if path_impl.mask_dirty {
-                self.mask.unpack();
-                tile.render(&mut self.pixels, self.size.x, stop, &self.mask, texture, &self.bitmaps);
-                self.mask.clear();
-            }
+        match ssaa {
+            SsaaConfig::None => self.fill::<NoSsaa>(shape, bb, texture),
+            SsaaConfig::X2 => self.fill::<SsaaX2>(shape, bb, texture),
+            SsaaConfig::X4 => self.fill::<SsaaX4>(shape, bb, texture),
+            SsaaConfig::X8 => self.fill::<SsaaX8>(shape, bb, texture),
+            SsaaConfig::X16 => self.fill::<SsaaX16>(shape, bb, texture),
         }
     }
 }
 
-struct PathImpl<'a> {
+struct PathImpl<'a, S> {
     mask: &'a mut Mask,
     mask_dirty: bool,
-    ssaa: SsaaConfig,
     tile_origin: Point,
+    _s: PhantomData<S>,
 }
 
 trait Collisions {
@@ -143,7 +156,7 @@ trait Collisions {
     fn collision<G: FnMut(f32)>(&self, row: f32, col_check: G);
 }
 
-impl PathApi for PathImpl<'_> {
+impl<S: ConstSsaa> PathApi for PathImpl<'_, S> {
     fn segment(&mut self, segment: Segment) {
         self.apply_collision(segment);
     }
@@ -153,36 +166,31 @@ impl PathApi for PathImpl<'_> {
     }
 }
 
-impl PathImpl<'_> {
+impl<S: ConstSsaa> PathImpl<'_, S> {
     fn apply_collision<P: Collisions>(&mut self, primitive: P) {
         // makes even edges more consistent with expectations
         const X_BIAS: f32 = 0.1;
         // this bias avoids double-cross glitches
         const Y_BIAS: f32 = 0.1;
 
-        let log2_cols = self.ssaa.log2_cols::<u16>();
-        let tile_width = (256u16 >> log2_cols) as f32;
-        let x_mul = (1 << log2_cols) as f32;
-        let vo_len: usize = self.ssaa.rows();
-        let offsets = self.ssaa.offsets();
+        let tile_width = (256u16 >> S::LOG2_COLS) as f32;
 
+        let mut row_offset = self.tile_origin.y + Y_BIAS;
+        let col_offset = self.tile_origin.x + X_BIAS;
         let mut dirty = false;
-        let mut vo_index = 0;
-        let mut row_v_offset = self.tile_origin.y;
+        let mut vo_index = S::ROWS;
 
         let rows = primitive._rows();
+        let mut y = row_offset + S::Y_BIAS;
 
         for mask_y in 0..128 {
-            let (v_offset, _h_offsets) = offsets[vo_index];
-            let y = row_v_offset + v_offset + Y_BIAS;
-
             if y >= *rows.start() {
                 if y > *rows.end() {
                     break;
                 }
 
                 let col_check = |collision_x: f32| {
-                    let x = collision_x - self.tile_origin.x - X_BIAS;
+                    let x = collision_x - col_offset;
 
                     if x >= 0.0 {
                         dirty = true;
@@ -190,6 +198,7 @@ impl PathImpl<'_> {
                         if x >= tile_width {
                             self.mask.toggle(255, mask_y);
                         } else {
+                            let x_mul = S::COLS as f32;
                             let mask_x = (x * x_mul).trunc();
                             self.mask.toggle(mask_x as u8, mask_y);
                         }
@@ -199,10 +208,14 @@ impl PathImpl<'_> {
                 primitive.collision(y, col_check);
             }
 
-            vo_index += 1;
-            if vo_index >= vo_len {
-                row_v_offset += 1.0;
-                vo_index = 0;
+            vo_index -= 1;
+
+            if vo_index != 0 {
+                y += S::Y_STEP;
+            } else {
+                row_offset += 1.0;
+                y = row_offset + S::Y_BIAS;
+                vo_index = S::ROWS;
             }
         }
 

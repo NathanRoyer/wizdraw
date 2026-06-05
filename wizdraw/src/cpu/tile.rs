@@ -1,17 +1,17 @@
 use super::*;
 
-pub struct TileIterator {
+pub struct TileIterator<S> {
     stop: Vec2<usize>,
     next: Vec2<usize>,
     tile_size: Vec2<usize>,
-    ssaa: SsaaConfig,
     min_x: usize,
+    _s: PhantomData<S>,
 }
 
-impl TileIterator {
-    pub fn new(fb_size: Vec2<usize>, ssaa: SsaaConfig, bb: BoundingBox) -> Self {
-        let tile_width = 256usize >> ssaa.log2_cols::<usize>();
-        let tile_height = 128usize >> ssaa.log2_rows::<usize>();
+impl<S: ConstSsaa> TileIterator<S> {
+    pub fn new(fb_size: Vec2<usize>, bb: BoundingBox) -> Self {
+        let tile_width = 256usize >> (S::LOG2_COLS as usize);
+        let tile_height = 128usize >> (S::LOG2_ROWS as usize);
         let min = bb.min.map(|c| c.floor() as usize);
         let max = bb.max.map(|c| c.ceil() as usize);
         let min = Vec2::max(Vec2::new(0, 0), min);
@@ -27,8 +27,8 @@ impl TileIterator {
             stop,
             next: min,
             tile_size,
-            ssaa,
             min_x: min.x,
+            _s: PhantomData,
         }
     }
 
@@ -36,28 +36,28 @@ impl TileIterator {
         self.stop
     }
 
-    fn into_tile(&self) -> Tile {
+    fn into_tile(&self) -> Tile<S> {
         let origin_f = self.next.map(|u| u as f32);
 
         Tile {
             origin_u: self.next,
             origin_f,
             tile_size: self.tile_size,
-            ssaa: self.ssaa,
+            _s: PhantomData,
         }
     }
 }
 
-pub struct Tile {
+pub struct Tile<S> {
     /// top left corner of the tile
     origin_u: Vec2<usize>,
     pub origin_f: Vec2<f32>,
     pub tile_size: Vec2<usize>,
-    ssaa: SsaaConfig,
+    _s: PhantomData<S>,
 }
 
-impl Iterator for TileIterator {
-    type Item = Tile;
+impl<S: ConstSsaa> Iterator for TileIterator<S> {
+    type Item = Tile<S>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut tile = None;
@@ -79,8 +79,7 @@ impl Iterator for TileIterator {
 }
 
 // rendering
-impl Tile {
-    // #[inline(never)]
+impl<S: ConstSsaa> Tile<S> {
     pub fn render(
         &mut self,
         pixels: &mut [Color],
@@ -92,52 +91,37 @@ impl Tile {
     ) {
         use sampler::Sampler;
 
-        let ssaa_rows: u8 = self.ssaa.rows();
-        let ssaa_cols: u8 = self.ssaa.cols();
-        let max_hits: u32 = (1 << self.ssaa.as_mul::<u32>()) - 1;
-        let offsets = self.ssaa.offsets();
-
         let x_min = self.origin_u.x;
         let y_min = self.origin_u.y;
-        let x_max = x_min + self.tile_size.x;
-        let y_max = y_min + self.tile_size.y;
+        let x_max = usize::min(stop.x, x_min + self.tile_size.x);
+        let y_max = usize::min(stop.y, y_min + self.tile_size.y);
 
-        let mut subp_base = Vec2::default();
         let mut mask_base = Vec2::<u8>::default();
 
         let sampler = texture.sampler(bitmaps);
 
         for y in y_min..y_max {
             let fb_line_offset = y * stride;
-            subp_base.y = y as f32;
+            let y_base = y as f32 + S::Y_BIAS;
 
-            if y >= stop.y {
-                break;
-            }
-
-            if mask.empty_rows(mask_base.y, ssaa_rows) {
-                mask_base.y = mask_base.y.wrapping_add(ssaa_rows);
+            if mask.empty_rows(mask_base.y, S::ROWS) {
+                mask_base.y = mask_base.y.wrapping_add(S::ROWS);
                 continue;
             }
 
             mask_base.x = 0;
 
             for x in x_min..x_max {
-                subp_base.x = x as f32;
-
-                if x >= stop.x {
-                    break;
-                }
-
+                let x_base = x as f32 + S::X_BIAS;
                 let mut hit_mask = 0;
 
-                for ssaa_y in 0..ssaa_rows {
+                for ssaa_y in 0..S::ROWS {
                     let y = mask_base.y + ssaa_y;
-                    let ssaa_hit = mask.get(mask_base.x, y, ssaa_cols);
-                    hit_mask = (hit_mask << ssaa_cols) | ssaa_hit;
+                    let ssaa_hit = mask.get(mask_base.x, y, S::COLS);
+                    hit_mask = (hit_mask << S::COLS) | ssaa_hit;
                 }
 
-                mask_base.x = mask_base.x.wrapping_add(ssaa_cols);
+                mask_base.x = mask_base.x.wrapping_add(S::COLS);
 
                 if hit_mask != 0 {
                     let mut src = Color16::new(0, 0, 0, 0);
@@ -145,35 +129,39 @@ impl Tile {
                     if let Texture::SolidColor(color) = texture {
                         src = color.map(|c| c as u16);
                     } else {
-                        for ssaa_y in 0..ssaa_rows {
-                            for ssaa_x in 0..ssaa_cols {
-                                let (v_offset, h_offsets) = offsets[ssaa_y as usize];
-                                let h_offset = h_offsets[ssaa_x as usize];
-                                let offset = Vec2::new(h_offset, v_offset);
-                                src += sampler.sample(subp_base + offset);
+                        let mut offset = Vec2::new(x_base, y_base);
+
+                        for _ in 0..S::ROWS {
+                            for _ in 0..S::COLS {
+                                src += sampler.sample(offset);
+                                offset.x += S::X_STEP;
                             }
+
+                            offset.y += S::Y_STEP;
+                            offset.x = x_base;
                         }
 
                         // divide by num_subpx
-                        src = const_ssaa!(self.ssaa, src, /);
+                        src = src / (S::SUBP as u16);
                     }
 
                     if src.a != 0 {
                         let px_i = fb_line_offset + x;
                         let dst = &mut pixels[px_i];
+                        let full_hit = hit_mask == S::MASK;
 
-                        if hit_mask == max_hits && src.a == 255 {
+                        if full_hit && src.a == 255 {
                             *dst = src.map(|c| c as u8);
                         } else {
                             src.a *= hit_mask.count_ones() as u16;
-                            src.a = const_ssaa!(self.ssaa, src.a, /);
+                            src.a = src.a / (S::SUBP as u16);
                             blend(src, dst);
                         }
                     }
                 }
             }
 
-            mask_base.y = mask_base.y.wrapping_add(ssaa_rows);
+            mask_base.y = mask_base.y.wrapping_add(S::ROWS);
         }
     }
 }
