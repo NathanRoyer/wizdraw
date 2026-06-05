@@ -21,10 +21,10 @@ litemap = { version = "0.8", optional = true } # features: text
 glow = { version = "0.17", optional = true } # features: gles2
 
 [features]
-default = [ "text", "shapes" ]
+default = [ "text" ]
 gles2 = [ "dep:glow", "std" ]
 text = [ "dep:ttf-parser", "dep:litemap" ]
-shapes = []
+cbz_segment = []
 std = []
 
 [dev-dependencies]

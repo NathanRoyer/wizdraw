@@ -142,10 +142,11 @@ impl super::Canvas for Canvas {
         }
     }
 
-    fn draw(&mut self, shape: &dyn Shape, texture: &Texture, _ssaa: SsaaConfig) {
-        let mut bb = BoundingBox::default();
-
-        shape.draw(&mut bb);
+    fn fill(&mut self, shape: &dyn Shape, bb: Option<BoundingBox>, texture: &Texture, _ssaa: SsaaConfig) {
+        let bb = match bb {
+            Some(bb) => bb,
+            None => shape.bounding_box(),
+        };
 
         let height = self.fb_size.y as f32;
 

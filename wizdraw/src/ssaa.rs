@@ -18,7 +18,7 @@ pub enum SsaaConfig {
 }
 
 impl SsaaConfig {
-    /*pub(crate) fn as_mul<T: From<u8>>(&self) -> T {
+    pub(crate) fn as_mul<T: From<u8>>(&self) -> T {
         match self {
             SsaaConfig::None =>  1,
             SsaaConfig::X2   =>  2,
@@ -26,7 +26,7 @@ impl SsaaConfig {
             SsaaConfig::X8   =>  8,
             SsaaConfig::X16  => 16,
         }.into()
-    }*/
+    }
 
     pub(crate) fn log2_rows<T: From<u8>>(&self) -> T {
         match self {

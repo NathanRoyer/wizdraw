@@ -134,8 +134,8 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     // shape.cubic_bezier([btm_left, btm_right, top_right, top_left], 8.0);
 
     wiz.clear();
-    // wiz.draw(&shape, &Texture::Debug, SsaaConfig::None);
-    // wiz.draw(&shape, &texture, SsaaConfig::None);
+    // wiz.fill(&shape, None, &Texture::Debug, SsaaConfig::None);
+    // wiz.fill(&shape, None, &texture, SsaaConfig::None);
 
     let poly = [
         Point::new(0.12 * wf, 0.1 * hf),
@@ -150,7 +150,7 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
         points: &poly,
     };
 
-    wiz.draw(&quad, &_purple, SsaaConfig::X4);
+    wiz.fill(&quad, None, &_purple, SsaaConfig::X4);
 
     /* let offset = -50.0;
 
@@ -180,7 +180,7 @@ pub fn frame(x: f32, y: f32, cpu: bool) -> Result<(), JsValue> {
     dialog.arc(Arc::new(bri, 25.0, rad(0.0), rad(-90.0), true));
     dialog.arc(Arc::new(bli, 25.0, rad(-90.0), rad(-180.0), true));
 
-    wiz.draw(&dialog, &_purple, SsaaConfig::X4);*/
+    wiz.fill(&dialog, None, &_purple, SsaaConfig::X4);*/
 
     if cpu {
         let pixels = state.cpu.pixels();

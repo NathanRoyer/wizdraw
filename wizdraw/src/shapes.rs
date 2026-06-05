@@ -130,3 +130,70 @@ impl Shape for Rectangle {
         Polygon::from(*self).draw(api);
     }
 }
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Disk {
+    pub center: Point,
+    pub radius: f32,
+}
+
+impl Shape for Disk {
+    fn draw(&self, api: &mut dyn PathApi) {
+        api.arc(Arc::disk(self.center, self.radius));
+    }
+}
+
+////////////////////////////////////////////////////////
+
+pub struct Transformer<S: Shape> {
+    pub shape: S,
+    pub scale: f32,
+    pub translation: Vec2<f32>,
+}
+
+struct TransformerApi<'a, S: Shape> {
+    inner: &'a Transformer<S>,
+    real_api: &'a mut dyn PathApi,
+}
+
+impl<S: Shape> PathApi for TransformerApi<'_, S> {
+    fn segment(&mut self, mut segment: Segment) {
+        segment.a *= self.inner.scale;
+        segment.b *= self.inner.scale;
+        segment.a += self.inner.translation;
+        segment.b += self.inner.translation;
+        self.real_api.segment(segment);
+    }
+
+    fn arc(&mut self, mut arc: Arc) {
+        arc.radius *= self.inner.scale;
+        arc.center *= self.inner.scale;
+        arc.center += self.inner.translation;
+        self.real_api.arc(arc);
+    }
+}
+
+impl<S: Shape> Shape for Transformer<S> {
+    fn draw(&self, api: &mut dyn PathApi) {
+        let mut wrapper = TransformerApi {
+            inner: self,
+            real_api: api,
+        };
+
+        self.shape.draw(&mut wrapper);
+    }
+}
+
+////////////////////////////////////////////////////////
+
+pub struct Combiner<A: Shape, B: Shape> {
+    pub a: A,
+    pub b: B,
+}
+
+impl<A: Shape, B: Shape> Shape for Combiner<A, B> {
+    fn draw(&self, api: &mut dyn PathApi) {
+        self.a.draw(api);
+        self.b.draw(api);
+    }
+}

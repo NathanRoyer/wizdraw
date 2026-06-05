@@ -3,10 +3,11 @@ use alloc::{vec, vec::Vec, boxed::Box};
 use rgb::ComponentMap;
 use super::*;
 
-mod bitmap;
-mod texture;
 mod mask;
 mod tile;
+mod bitmap;
+mod sampler;
+pub(crate) mod inside;
 
 use tile::TileIterator;
 use bitmap::Bitmaps;
@@ -39,6 +40,12 @@ impl Canvas {
             mask: Box::new(Mask::new()),
             size: Vec2::new(width, height),
         }
+    }
+
+    pub fn resize(&mut self, width: usize, height: usize) {
+        let sz = width * height;
+        self.size = Vec2::new(width, height);
+        self.pixels = vec![Default::default(); sz].into();
     }
 
     pub fn pixels(&self) -> &[Color] {
@@ -96,11 +103,16 @@ impl super::Canvas for Canvas {
         }
     }
 
-    fn draw(&mut self, shape: &dyn Shape, texture: &Texture, ssaa: SsaaConfig) {
-        let mut bb = BoundingBox::default();
-        shape.draw(&mut bb);
+    fn fill(&mut self, shape: &dyn Shape, bb: Option<BoundingBox>, texture: &Texture, ssaa: SsaaConfig) {
+        let bb = match bb {
+            Some(bb) => bb,
+            None => shape.bounding_box(),
+        };
 
-        for mut tile in self.tiles(ssaa, bb) {
+        let tile_iter = self.tiles(ssaa, bb);
+        let stop = tile_iter.stop();
+
+        for mut tile in tile_iter {
             let mut path_impl = PathImpl {
                 mask: &mut self.mask,
                 mask_dirty: false,
@@ -112,7 +124,7 @@ impl super::Canvas for Canvas {
 
             if path_impl.mask_dirty {
                 self.mask.unpack();
-                tile.render(&mut self.pixels, self.size, &self.mask, texture, &self.bitmaps);
+                tile.render(&mut self.pixels, self.size.x, stop, &self.mask, texture, &self.bitmaps);
                 self.mask.clear();
             }
         }
@@ -126,22 +138,25 @@ struct PathImpl<'a> {
     tile_origin: Point,
 }
 
+trait Collisions {
+    fn _rows(&self) -> RangeInclusive<f32>;
+    fn collision<G: FnMut(f32)>(&self, row: f32, col_check: G);
+}
+
 impl PathApi for PathImpl<'_> {
     fn segment(&mut self, segment: Segment) {
-        let rows = segment.rows();
-        let col_fn = |row| segment_collision(row, &segment);
-        self.apply_collision(rows, col_fn);
+        self.apply_collision(segment);
     }
 
     fn arc(&mut self, arc: Arc) {
-        let rows = arc.rows();
-        let col_fn = |row| arc_collision(row, &arc);
-        self.apply_collision(rows, col_fn);
+        self.apply_collision(arc);
     }
 }
 
 impl PathImpl<'_> {
-    fn apply_collision<F: Fn(f32) -> Collisions>(&mut self, rows: RangeInclusive<f32>, collisions: F) {
+    fn apply_collision<P: Collisions>(&mut self, primitive: P) {
+        // makes even edges more consistent with expectations
+        const X_BIAS: f32 = 0.1;
         // this bias avoids double-cross glitches
         const Y_BIAS: f32 = 0.1;
 
@@ -155,18 +170,19 @@ impl PathImpl<'_> {
         let mut vo_index = 0;
         let mut row_v_offset = self.tile_origin.y;
 
+        let rows = primitive._rows();
+
         for mask_y in 0..128 {
             let (v_offset, _h_offsets) = offsets[vo_index];
             let y = row_v_offset + v_offset + Y_BIAS;
 
             if y >= *rows.start() {
-                if y >= *rows.end() {
+                if y > *rows.end() {
                     break;
                 }
 
-                let collisions = collisions(y);
-                for collision_x in collisions.iter().flatten() {
-                    let x = collision_x - self.tile_origin.x;
+                let col_check = |collision_x: f32| {
+                    let x = collision_x - self.tile_origin.x - X_BIAS;
 
                     if x >= 0.0 {
                         dirty = true;
@@ -178,7 +194,9 @@ impl PathImpl<'_> {
                             self.mask.toggle(mask_x as u8, mask_y);
                         }
                     }
-                }
+                };
+
+                primitive.collision(y, col_check);
             }
 
             vo_index += 1;
@@ -192,30 +210,67 @@ impl PathImpl<'_> {
     }
 }
 
-type Collisions = [Option<f32>; 2];
-
-fn segment_collision(row: f32, segment: &Segment) -> Collisions {
-    let Segment { a, b } = *segment;
-
-    let y_range = match a.y < b.y {
-        true => a.y..=b.y,
-        false => b.y..=a.y,
-    };
-
-    if (!y_range.contains(&row)) || a.y == b.y {
-        return [None, None];
+impl Collisions for Segment {
+    fn _rows(&self) -> RangeInclusive<f32> {
+        self.rows()
     }
 
-    let t = (a.y - row) / (a.y - b.y);
+    fn collision<G: FnMut(f32)>(&self, row: f32, mut col_check: G) {
+        let Segment { a, b } = *self;
 
-    if !(0.0..=1.0).contains(&t) {
-        return [None, None];
+        let y_range = match a.y < b.y {
+            true => a.y..=b.y,
+            false => b.y..=a.y,
+        };
+
+        if (!y_range.contains(&row)) || a.y == b.y {
+            return;
+        }
+
+        let t = (a.y - row) / (a.y - b.y);
+
+        if !(0.0..=1.0).contains(&t) {
+            return;
+        }
+
+        let offset = a.x + (b.x - a.x) * t;
+        col_check(offset);
+    }
+}
+
+impl Collisions for Arc {
+    fn _rows(&self) -> RangeInclusive<f32> {
+        self.rows()
     }
 
-    let offset = a.x + (b.x - a.x) * t;
-    // let downward = b.y > a.y;
+    fn collision<G: FnMut(f32)>(&self, row: f32, mut col_check: G) {
+        let sin_radius = row - self.center.y;
 
-    [Some(offset), None]
+        if !(-self.radius..=self.radius).contains(&sin_radius) {
+            return;
+        }
+
+        let range = cos_range(self.min_angle_magic, self.max_angle_magic, sin_radius < 0.0);
+
+        if range == NO_COLLISION {
+            return;
+        }
+
+        let radius = self.radius as f64;
+        let sin = (sin_radius as f64) / radius;
+
+        let r_cos = f64::sqrt(1.0 - sin * sin);
+
+        if range.contains(&r_cos) ^ self.wraps {
+            col_check(self.center.x + (r_cos * radius) as f32);
+        }
+
+        let l_cos = -r_cos;
+
+        if range.contains(&l_cos) ^ self.wraps {
+            col_check(self.center.x + (l_cos * radius) as f32);
+        }
+    }
 }
 
 const FAKE_COS: f64 = 2.0;
@@ -243,42 +298,4 @@ pub(crate) fn cos_range(min_angle_magic: u32, max_angle_magic: u32, row_pos: boo
     };
 
     min_cos..=max_cos
-}
-
-fn arc_collision(row: f32, arc: &Arc) -> Collisions {
-    let sin_radius = row - arc.center.y;
-
-    if arc.radius <= 0.0 || !(-arc.radius..=arc.radius).contains(&sin_radius) {
-        return [None, None];
-    }
-
-    let range = cos_range(arc.min_angle_magic, arc.max_angle_magic, sin_radius < 0.0);
-
-    if range == NO_COLLISION {
-        return [None, None];
-    }
-
-    let radius = arc.radius as f64;
-    let sin = (sin_radius as f64) / radius;
-
-    let r_cos = f64::sqrt(1.0 - sin * sin);
-    let l_cos = -r_cos;
-
-    let r_col = range.contains(&r_cos) ^ arc.wraps;
-    let l_col = range.contains(&l_cos) ^ arc.wraps;
-
-    let mut l_collision = None;
-    let mut r_collision = None;
-
-    if l_col {
-        let offset = arc.center.x + (l_cos * radius) as f32;
-        l_collision = Some(offset);
-    }
-
-    if r_col {
-        let offset = arc.center.x + (r_cos * radius) as f32;
-        r_collision = Some(offset);
-    }
-
-    [l_collision, r_collision]
 }

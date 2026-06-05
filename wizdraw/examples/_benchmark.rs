@@ -66,8 +66,8 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
         let texture = Texture::QuadBitmap {
             top_left:  Point::new(0.410 * wf, 0.300 * hf),
             top_right: Point::new(0.590 * wf, 0.370 * hf),
-            btm_left:  Point::new(0.410 * wf, 0.700 * hf),
             btm_right: Point::new(0.590 * wf, 0.630 * hf),
+            btm_left:  Point::new(0.410 * wf, 0.700 * hf),
             bitmap,
         };
 
@@ -75,12 +75,12 @@ pub fn benchmark<C: Canvas>(canvas: &mut C, wf: f32, hf: f32) {
             let then = Instant::now();
             let num = 50;
             for _ in 0..num {
-                canvas.draw(&quad, &Texture::Debug, ssaa);
-                canvas.stroke(&quad, 4.0, &green, ssaa);
-                canvas.draw(&path, &Texture::Debug, ssaa);
-                canvas.draw(&path, &texture, ssaa);
-                canvas.stroke(&path, 4.0, &green, ssaa);
-                canvas.draw(&text_shape, &white, ssaa);
+                canvas.fill(&quad, None, &Texture::Debug, ssaa);
+                canvas.stroke(&quad, None, 4.0, &green, ssaa);
+                canvas.fill(&path, None, &Texture::Debug, ssaa);
+                canvas.fill(&path, None, &texture, ssaa);
+                canvas.stroke(&path, None, 4.0, &green, ssaa);
+                canvas.fill(&text_shape, None, &white, ssaa);
             }
             let avg_ms = then.elapsed().as_micros() / num;
             let fps = 1000000 / avg_ms;

@@ -5,6 +5,8 @@ use core::mem::swap;
 
 /////////////////////////////////////////////////////////
 
+// todo: improve bounding boxes but respect the ones provided by the user
+
 const CURVATURE_INIT_0: u8 = 0;
 const CURVATURE_INIT_1: u8 = 1;
 const CURVATURE_SFSG: u8 = 2;
@@ -224,16 +226,17 @@ struct StrikerApi2<'a, C: Canvas + ?Sized> {
     texture: &'a Texture<'a>,
     ssaa: SsaaConfig,
     width: f32,
+    bb: Option<BoundingBox>,
 }
 
 impl<C: Canvas + ?Sized> StrikerApi2<'_, C> {
     fn point(&mut self, point: Point) {
-        let disk = Disk {
+        let disk = shapes::Disk {
             center: point,
             radius: self.width,
         };
 
-        self.canvas.draw(&disk, self.texture, self.ssaa);
+        self.canvas.fill(&disk, self.bb, self.texture, self.ssaa);
     }
 }
 
@@ -252,7 +255,7 @@ impl<C: Canvas + ?Sized> PathApi for StrikerApi2<'_, C> {
 
 /////////////////////////////////////////////////////////
 
-pub fn stroke<C: Canvas + ?Sized>(canvas: &mut C, shape: &dyn Shape, width: f32, texture: &Texture, ssaa: SsaaConfig) {
+pub fn stroke<C: Canvas + ?Sized>(canvas: &mut C, shape: &dyn Shape, bb: Option<BoundingBox>, width: f32, texture: &Texture, ssaa: SsaaConfig) {
     let mut monitor = Cell::default();
 
     let striker = InitialStriker {
@@ -262,7 +265,7 @@ pub fn stroke<C: Canvas + ?Sized>(canvas: &mut C, shape: &dyn Shape, width: f32,
         cm: &monitor,
     };
 
-    canvas.draw(&striker, texture, ssaa);
+    canvas.fill(&striker, bb, texture, ssaa);
 
     let cm = monitor.get_mut();
 
@@ -273,6 +276,7 @@ pub fn stroke<C: Canvas + ?Sized>(canvas: &mut C, shape: &dyn Shape, width: f32,
             texture,
             ssaa,
             width,
+            bb,
         };
 
         shape.draw(&mut striker2);

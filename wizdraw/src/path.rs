@@ -63,10 +63,10 @@ impl PathApi for Path {
 
 impl Shape for Path {
     fn draw(&self, api: &mut dyn PathApi) {
-        for chunk in self.data.chunks_exact(5) {
-            let first_f32 = chunk[0];
-            let (a, b) = (chunk[1], chunk[2]);
-            let (c, d) = (chunk[3], chunk[4]);
+        let (chunks, _rem) = self.data.as_chunks::<5>();
+
+        for chunk in chunks {
+            let [first_f32, a, b, c, d] = *chunk;
 
             if first_f32 == 0.0 {
                 let segment = Segment {
@@ -88,47 +88,6 @@ impl Shape for Path {
 
             api.arc(arc);
         }
-    }
-}
-
-/////////////////////////////////////////////////////////
-
-pub struct Transformer<S: Shape> {
-    pub shape: S,
-    pub scale: f32,
-    pub translation: Vec2<f32>,
-}
-
-struct TransformerApi<'a, S: Shape> {
-    inner: &'a Transformer<S>,
-    real_api: &'a mut dyn PathApi,
-}
-
-impl<S: Shape> PathApi for TransformerApi<'_, S> {
-    fn segment(&mut self, mut segment: Segment) {
-        segment.a *= self.inner.scale;
-        segment.b *= self.inner.scale;
-        segment.a += self.inner.translation;
-        segment.b += self.inner.translation;
-        self.real_api.segment(segment);
-    }
-
-    fn arc(&mut self, mut arc: Arc) {
-        arc.radius *= self.inner.scale;
-        arc.center *= self.inner.scale;
-        arc.center += self.inner.translation;
-        self.real_api.arc(arc);
-    }
-}
-
-impl<S: Shape> Shape for Transformer<S> {
-    fn draw(&self, api: &mut dyn PathApi) {
-        let mut wrapper = TransformerApi {
-            inner: self,
-            real_api: api,
-        };
-
-        self.shape.draw(&mut wrapper);
     }
 }
 
@@ -216,11 +175,18 @@ impl Arc {
 
 /////////////////////////////////////////////////////////
 
-impl Path {
-    pub fn cubic_bezier(&mut self, points: [Point; 4], max_error: f32) {
-        let [a, b, c, d] = points;
+type CubicBezier = [Point; 4];
 
-        if aligned([a, b, d]) && aligned([a, c, d]) {
+fn is_curve_straight([a, b, c, d]: CubicBezier) -> bool {
+    aligned([a, b, d]) && aligned([a, c, d])
+}
+
+impl Path {
+    #[cfg(not(feature = "cbz_segment"))]
+    pub fn cubic_bezier(&mut self, curve: CubicBezier, max_error: f32) {
+        let [a, b, c, d] = curve;
+
+        if is_curve_straight(curve) {
             self.segment((a, d).into());
             return;
         }
@@ -295,6 +261,49 @@ impl Path {
             p1 = p3;
             t = p3_t;
             n = 1.0 - t;
+        }
+    }
+
+    /// Using segments isn't smart
+    #[cfg(feature = "cbz_segment")]
+    pub fn cubic_bezier(&mut self, mut curve: CubicBezier, max_error: f32) {
+        let lerp = Vec2::lerp_unclamped_precise;
+
+        let split = |t: f32, curve: CubicBezier| -> [CubicBezier; 2] {
+            let [a, b, c, d] = curve;
+
+            let ab = lerp(a, b, t);
+            let bc = lerp(b, c, t);
+            let cd = lerp(c, d, t);
+            let abc = lerp(ab, bc, t);
+            let bcd = lerp(bc, cd, t);
+            
+            let sample = lerp(abc, bcd, t);
+
+            let prev = [a, ab, abc, sample];
+            let next = [sample, bcd, cd, d];
+
+            [prev, next]
+        };
+
+        let mut trial: f32 = 1.0;
+
+        loop {
+            let [trial_sc, future_sc] = split(trial, curve);
+
+            if is_curve_straight(trial_sc) {
+                self.segment((trial_sc[0], trial_sc[3]).into());
+
+                // did we complete this curve?
+                if trial == 1.0 {
+                    break;
+                }
+
+                curve = future_sc;
+                trial = 1.0;
+            } else {
+                trial *= 0.5;
+            }
         }
     }
 }

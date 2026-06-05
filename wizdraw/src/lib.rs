@@ -19,16 +19,18 @@ use vek::num_traits::Float;
 pub use ssaa::SsaaConfig;
 mod ssaa;
 
-pub use path::{Path, Transformer};
+pub use path::Path;
 mod path;
 
 mod stroke;
 
-#[cfg(any(doc, feature = "shapes"))]
+
+pub use shapes::{Polygon, Rectangle, Transformer, Combiner};
 pub mod shapes;
 
 /// Implementations of [`Canvas`] using only the CPU
 pub mod cpu;
+pub use cpu::inside::shape_contains;
 
 /// Implementations of [`Canvas`] using a GPU
 #[cfg(feature = "gles2")]
@@ -269,6 +271,16 @@ pub trait PathApi {
 pub trait Shape {
     fn draw(&self, api: &mut dyn PathApi);
 
+    fn bounding_box(&self) -> BoundingBox {
+        let mut bb = BoundingBox::default();
+        self.draw(&mut bb);
+        bb
+    }
+
+    fn contains(&self, point: Point) -> bool where Self: Sized {
+        shape_contains(point, self)
+    }
+
     fn transform(&self, scale: f32, translation: Vec2<f32>) -> Transformer<&Self> where Self: Sized {
         Transformer {
             shape: self,
@@ -276,23 +288,18 @@ pub trait Shape {
             translation,
         }
     }
+
+    fn combine<B: Shape + Sized>(&self, b: B) -> Combiner<&Self, B> where Self: Sized {
+        Combiner {
+            a: self,
+            b,
+        }
+    }
 }
 
 impl<T: Shape> Shape for &T {
     fn draw(&self, api: &mut dyn PathApi) {
         T::draw(self, api)
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Disk {
-    pub center: Point,
-    pub radius: f32,
-}
-
-impl Shape for Disk {
-    fn draw(&self, api: &mut dyn PathApi) {
-        api.arc(Arc::disk(self.center, self.radius));
     }
 }
 
@@ -305,27 +312,11 @@ pub trait Canvas {
     fn free_bitmap(&mut self, bitmap: BitmapHandle);
 
     fn clear(&mut self);
-    fn draw(&mut self, shape: &dyn Shape, texture: &Texture, ssaa: SsaaConfig);
+    fn fill(&mut self, shape: &dyn Shape, bb: Option<BoundingBox>, texture: &Texture, ssaa: SsaaConfig);
 
-    fn stroke(&mut self, shape: &dyn Shape, width: f32, texture: &Texture, ssaa: SsaaConfig) {
-        stroke::stroke(self, shape, width, texture, ssaa);
+    fn stroke(&mut self, shape: &dyn Shape, bb: Option<BoundingBox>, width: f32, texture: &Texture, ssaa: SsaaConfig) {
+        stroke::stroke(self, shape, bb, width, texture, ssaa);
     }
-}
-
-fn min_max(input: [f32; 4]) -> (f32, f32) {
-    let mut min = f32::MAX;
-    let mut max = f32::MIN;
-
-    for float in input {
-        if float < min {
-            min = float;
-        }
-        if float > max {
-            max = float;
-        }
-    }
-
-    (min, max)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -344,18 +335,37 @@ impl Default for BoundingBox {
 }
 
 impl BoundingBox {
-    fn check(&mut self, point: Point) {
+    pub fn new(min: Point, max: Point) -> Self {
+        Self { min, max }
+    }
+
+    pub fn adopt(&mut self, point: Point) {
         if point.x < self.min.x { self.min.x = point.x; }
         if point.x > self.max.x { self.max.x = point.x; }
         if point.y < self.min.y { self.min.y = point.y; }
         if point.y > self.max.y { self.max.y = point.y; }
     }
+
+    pub fn restrict(&mut self, other: &Self) {
+        if self.min.x < other.min.x { self.min.x = other.min.x; }
+        if self.min.y < other.min.y { self.min.y = other.min.y; }
+        if self.max.x > other.max.x { self.max.x = other.max.x; }
+        if self.max.y > other.max.y { self.max.y = other.max.y; }
+    }
+
+    pub fn to_rect(&self) -> Rectangle {
+        Rectangle::new([self.min, self.max])
+    }
+
+    pub fn contains(&self, point: Point) -> bool {
+        (point.x >= self.min.x) && (point.x <= self.max.x) && (point.y >= self.min.y) && (point.y <= self.max.y)
+    }
 }
 
 impl PathApi for BoundingBox {
     fn segment(&mut self, segment: Segment) {
-        self.check(segment.a);
-        self.check(segment.b);
+        self.adopt(segment.a);
+        self.adopt(segment.b);
     }
 
     fn arc(&mut self, arc: Arc) {
@@ -364,8 +374,8 @@ impl PathApi for BoundingBox {
 
         let min = Point::new(*cols.start(), *rows.start());
         let max = Point::new(*cols.end(), *rows.end());
-        self.check(min);
-        self.check(max);
+        self.adopt(min);
+        self.adopt(max);
     }
 }
 
