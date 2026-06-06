@@ -3,7 +3,7 @@ use super::*;
 use ttf_parser::{Face, OutlineBuilder};
 use litemap::LiteMap;
 
-const BASE_SIZE: f32 = 200.0;
+pub const BASE_SIZE: f32 = 200.0;
 const MAX_ERROR: f32 = 4.0;
 
 pub struct GlyphData {
@@ -106,7 +106,7 @@ impl<T: AsRef<[u8]>> Font<T> {
     }
 
     pub fn text_shape<'a>(&'a mut self, text: &'a str, size: f32, top_left: Point) -> TextShape<'a, T> {
-        // ensure all glyphs are loaded, allowing self to become an immutable referenec
+        // ensure all glyphs are loaded, allowing self to become an immutable reference
         self.preload_all(text);
 
         TextShape {

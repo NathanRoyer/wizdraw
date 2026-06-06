@@ -11,13 +11,15 @@ fn apply(x: f32, col: f32, inside: &mut bool) {
 
 impl PathApi for PointCheck {
     fn segment(&mut self, segment: Segment) {
+        let precomp = SegmentPrecomp::new(segment);
         let col_check = |x: f32| apply(self.point.x, x, &mut self.inside);
-        segment.collision(self.point.y, col_check);
+        precomp.collision(self.point.y, col_check);
     }
 
     fn arc(&mut self, arc: Arc) {
+        let precomp = ArcPrecomp::new(arc);
         let col_check = |x: f32| apply(self.point.x, x, &mut self.inside);
-        arc.collision(self.point.y, col_check);
+        precomp.collision(self.point.y, col_check);
     }
 }
 

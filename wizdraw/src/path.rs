@@ -132,7 +132,11 @@ impl Arc {
         let max_angle_magic = encode_magic_2(max_cos, max_neg);
 
         let range = cpu::cos_range(min_angle_magic, max_angle_magic, !c2b_neg);
-        let wraps = !range.contains(&c2b_cos);
+
+        let wraps = match range {
+            Some(range) => !range.contains(&c2b_cos),
+            None => true,
+        };
 
         Self {
             center: center.map(to_f32),

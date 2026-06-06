@@ -17,9 +17,6 @@ use glow::UNSIGNED_BYTE as RGBA8888;
 
 use super::*;
 
-// todo
-// mod drm_kms;
-
 struct TexTile {
     offset: Vec2<usize>,
     tex_id: GlTexture,
