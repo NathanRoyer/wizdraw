@@ -1,3 +1,4 @@
+use super::sampler::Sampler;
 use super::*;
 
 pub struct TileIterator<S> {
@@ -80,25 +81,20 @@ impl<S: ConstSsaa> Iterator for TileIterator<S> {
 
 // rendering
 impl<S: ConstSsaa> Tile<S> {
-    pub fn render(
+    pub fn render<T: Sampler>(
         &mut self,
         pixels: &mut [Color],
         stride: usize,
         stop: Vec2<usize>,
         mask: &Mask,
-        texture: &Texture,
-        bitmaps: &Bitmaps,
+        sampler: &T,
     ) {
-        use sampler::Sampler;
-
         let x_min = self.origin_u.x;
         let y_min = self.origin_u.y;
         let x_max = usize::min(stop.x, x_min + self.tile_size.x);
         let y_max = usize::min(stop.y, y_min + self.tile_size.y);
 
         let mut mask_base = Vec2::<u8>::default();
-
-        let sampler = texture.sampler(bitmaps);
 
         for y in y_min..y_max {
             let fb_line_offset = y * stride;
@@ -126,8 +122,8 @@ impl<S: ConstSsaa> Tile<S> {
                 if hit_mask != 0 {
                     let mut src = Color16::new(0, 0, 0, 0);
 
-                    if let Texture::SolidColor(color) = texture {
-                        src = color.map(|c| c as u16);
+                    if T::FLAT {
+                        src = sampler.sample(Point::default());
                     } else {
                         let mut offset = Vec2::new(x_base, y_base);
 

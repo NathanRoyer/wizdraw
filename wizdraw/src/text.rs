@@ -56,7 +56,15 @@ fn glyph_path(bytes: &[u8], glyph: char) -> Option<GlyphData> {
 impl<T: AsRef<[u8]>> Font<T> {
     pub fn new(bytes: T) -> Self {
         let mut cache = LiteMap::new();
-        cache.insert(' ', whitespace_path());
+        let emsp = char::from_u32(0x2003).unwrap();
+
+        cache.insert(' ', whitespace_path(0.5));
+        cache.insert(emsp, whitespace_path(1.0));
+        cache.insert('\t', whitespace_path(3.5));
+        cache.insert('\r', whitespace_path(0.0));
+
+        // setting this to nonzero for when layout doesn't accept line feeds
+        cache.insert('\n', whitespace_path(0.5));
 
         Self {
             bytes,
@@ -239,9 +247,9 @@ fn fallback_path() -> GlyphData {
     }
 }
 
-fn whitespace_path() -> GlyphData {
+fn whitespace_path(h_factor: f32) -> GlyphData {
     let h_advance = BASE_SIZE * 0.3;
-    let h_bearing = h_advance / 2.0;
+    let h_bearing = h_advance * h_factor;
 
     GlyphData {
         path: Path::default(),

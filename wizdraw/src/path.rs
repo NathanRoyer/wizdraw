@@ -128,8 +128,8 @@ impl Arc {
             false => (c2c_cos, c2a_cos, c2c_neg, c2a_neg),
         };
 
-        let min_angle_magic = encode_magic_2(min_cos, min_neg);
-        let max_angle_magic = encode_magic_2(max_cos, max_neg);
+        let min_angle_magic = primitives::encode_magic_2(min_cos, min_neg);
+        let max_angle_magic = primitives::encode_magic_2(max_cos, max_neg);
 
         let range = cpu::cos_range(min_angle_magic, max_angle_magic, !c2b_neg);
 

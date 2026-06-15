@@ -4,6 +4,7 @@ use vek::num_traits::Euclid;
 const TRANSPARENT: Color16 = Color16::new(0, 0, 0, 0);
 
 pub trait Sampler {
+    const FLAT: bool = false;
     fn sample(&self, point: Point) -> Color16;
 }
 
@@ -12,7 +13,7 @@ pub trait Sampler {
 pub struct SolidSampler(Color16);
 
 impl Sampler for SolidSampler {
-    #[inline(always)]
+    const FLAT: bool = true;
     fn sample(&self, _point: Point) -> Color16 {
         self.0
     }
@@ -45,6 +46,85 @@ impl Sampler for RainbowSampler {
 
 //////////////////////////////////////////////////////////
 
+pub struct MaskSampler<'a> {
+    mask: &'a MaskImage,
+    top_left: Point,
+    scaled_size: Vec2<f32>,
+    inv_scale: f32,
+    repeat: bool,
+    zero: Option<Color16>,
+    full: Color16,
+}
+
+impl<'a> MaskSampler<'a> {
+    #[inline(always)]
+    fn sample(&self, texture_offset: Point) -> Color16 {
+        let x = texture_offset.x as usize;
+        let y = texture_offset.y as usize;
+        let i = y * self.mask.size.x + x;
+        let f_factor = self.mask.pixels.get(i).copied().unwrap_or(0);
+        let z_factor = 255 - f_factor;
+        let mut full = self.full;
+
+        if let Some(zero) = self.zero {
+            let full_part = full.map(|c| (f_factor as u16) * c / 255u16);
+            let zero_part = zero.map(|c| (z_factor as u16) * c / 255u16);
+            full_part + zero_part
+        } else {
+            full.a = (f_factor as u16) * full.a / 255u16;
+            full
+        }
+    }
+
+    fn new(
+        masks: &'a [MaskImage],
+        mask_id: MaskHandle,
+        top_left: Point,
+        repeat: bool,
+        scale: f32,
+        zero: Option<Color>,
+        full: Color,
+    ) -> Option<Self> {
+        let mask = masks.get(mask_id.0)?;
+        let float_size = mask.size.map(|uint| uint as f32);
+        let scaled_size = float_size * scale;
+        let inv_scale = 1.0 / scale;
+
+        Some(Self {
+            mask,
+            top_left,
+            repeat,
+            inv_scale,
+            scaled_size,
+            zero: zero.map(|z| Color::map(&z, |c| c as u16)),
+            full: full.map(|c| c as u16),
+        })
+    }
+}
+
+impl Sampler for MaskSampler<'_> {
+    #[inline(always)]
+    fn sample(&self, point: Point) -> Color16 {
+        let mut offset = point - self.top_left;
+
+        if self.repeat {
+            offset = offset.rem_euclid(&self.scaled_size);
+        } else {
+            let invalid_x = 0.0 > offset.x || offset.x > self.scaled_size.x;
+            let invalid_y = 0.0 > offset.y || offset.y > self.scaled_size.y;
+
+            if invalid_x || invalid_y {
+                // out of bounds
+                return TRANSPARENT;
+            }
+        }
+
+        self.sample(offset * self.inv_scale)
+    }
+}
+
+//////////////////////////////////////////////////////////
+
 impl Bitmap {
     #[inline(always)]
     fn sample(&self, texture_offset: Point) -> Color16 {
@@ -69,24 +149,24 @@ pub struct ScaledSampler<'a> {
 
 impl<'a> ScaledSampler<'a> {
     fn new(
-        bitmaps: &'a Bitmaps,
+        bitmaps: &'a [Bitmap],
         bmp_id: BitmapHandle,
         top_left: Point,
         repeat: bool,
         scale: f32,
-    ) -> Self {
-        let bitmap = bitmaps.get(bmp_id);
+    ) -> Option<Self> {
+        let bitmap = bitmaps.get(bmp_id.0)?;
         let float_size = bitmap.size.map(|uint| uint as f32);
         let scaled_size = float_size * scale;
         let inv_scale = 1.0 / scale;
 
-        Self {
+        Some(Self {
             bitmap,
             top_left,
             repeat,
             inv_scale,
             scaled_size,
-        }
+        })
     }
 }
 
@@ -122,22 +202,22 @@ pub struct QuadSampler<'a> {
 
 impl<'a> QuadSampler<'a> {
     fn new(
-        bitmaps: &'a Bitmaps,
+        bitmaps: &'a [Bitmap],
         bmp_id: BitmapHandle,
         quad: [Point; 4],
-    ) -> Self {
-        let bitmap = bitmaps.get(bmp_id);
+    ) -> Option<Self> {
+        let bitmap = bitmaps.get(bmp_id.0)?;
         let mut bb = BoundingBox::default();
         for point in quad { bb.adopt(point); }
 
         let bili = BiliPrecomp::new(quad);
 
-        Self {
+        Some(Self {
             bitmap,
             quad,
             bili,
             bb,
-        }
+        })
     }
 }
 
@@ -166,49 +246,35 @@ impl Sampler for QuadSampler<'_> {
 
 pub enum SamplerEnum<'a> {
     Solid(SolidSampler),
+    Mask(MaskSampler<'a>),
     Rainbow(RainbowSampler),
     ScaledBitmap(ScaledSampler<'a>),
     QuadBitmap(QuadSampler<'a>),
 }
 
-impl Sampler for SamplerEnum<'_> {
-    #[inline(always)]
-    fn sample(&self, point: Point) -> Color16 {
-        match self {
-            Self::Solid(inner) => inner.sample(point),
-            Self::Rainbow(inner) => inner.sample(point),
-            Self::ScaledBitmap(inner) => inner.sample(point),
-            Self::QuadBitmap(inner) => inner.sample(point),
-        }
-    }
-}
-
 impl Texture<'_> {
-    pub(super) fn sampler<'a>(&'a self, bitmaps: &'a Bitmaps) -> SamplerEnum<'a> {
+    pub(super) fn sampler<'a>(&'a self, bitmaps: &'a [Bitmap], masks: &'a [MaskImage]) -> SamplerEnum<'a> {
+        let rainbow = SamplerEnum::Rainbow(RainbowSampler);
+
         match self {
             Texture::SolidColor(color) => SamplerEnum::Solid(SolidSampler(Color16::from(*color))),
             Texture::Gradient(_slice) => todo!(),
-            Texture::Debug => SamplerEnum::Rainbow(RainbowSampler),
+            Texture::Debug => rainbow,
 
-            Texture::Bitmap {
-                top_left,
-                scale,
-                repeat,
-                bitmap,
-            } => {
-                let sampler = ScaledSampler::new(bitmaps, *bitmap, *top_left, *repeat, *scale);
-                SamplerEnum::ScaledBitmap(sampler)
+            Texture::Mask { top_left, scale, repeat, mask, zero, full } => {
+                let sampler = MaskSampler::new(masks, *mask, *top_left, *repeat, *scale, *zero, *full);
+                sampler.map(SamplerEnum::Mask).unwrap_or(rainbow)
             },
 
-            Texture::QuadBitmap {
-                top_left,
-                btm_left,
-                top_right,
-                btm_right,
-                bitmap,
-            } => {
+            Texture::Bitmap { top_left, scale, repeat, bitmap } => {
+                let sampler = ScaledSampler::new(bitmaps, *bitmap, *top_left, *repeat, *scale);
+                sampler.map(SamplerEnum::ScaledBitmap).unwrap_or(rainbow)
+            },
+
+            Texture::QuadBitmap { top_left, btm_left, top_right, btm_right, bitmap } => {
                 let quad = [*top_left, *top_right, *btm_right, *btm_left];
-                SamplerEnum::QuadBitmap(QuadSampler::new(bitmaps, *bitmap, quad))
+                let sampler = QuadSampler::new(bitmaps, *bitmap, quad);
+                sampler.map(SamplerEnum::QuadBitmap).unwrap_or(rainbow)
             },
         }
     }

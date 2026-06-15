@@ -8,12 +8,10 @@ use crate::ssaa::*;
 
 mod mask;
 mod tile;
-mod bitmap;
 mod sampler;
 pub(crate) mod inside;
 
 use tile::TileIterator;
-use bitmap::Bitmaps;
 use mask::Mask;
 
 type Color16 = rgb::RGBA::<u16>;
@@ -24,10 +22,17 @@ struct Bitmap {
     pixels: Box<[Color]>,
 }
 
+#[derive(Debug, Clone)]
+struct MaskImage {
+    size: Vec2<usize>,
+    pixels: Box<[u8]>,
+}
+
 /// Drawing Surface
 #[derive(Debug, Clone)]
 pub struct Canvas {
-    bitmaps: Bitmaps,
+    bitmaps: Vec<Bitmap>,
+    masks: Vec<MaskImage>,
     pixels: Box<[Color]>,
     mask: Box<Mask>,
     size: Vec2<usize>,
@@ -38,7 +43,8 @@ impl Canvas {
     pub fn new(width: usize, height: usize) -> Canvas {
         let sz = width * height;
         Canvas {
-            bitmaps: Bitmaps::new(),
+            bitmaps: Vec::new(),
+            masks: Vec::new(),
             pixels: vec![Default::default(); sz].into(),
             mask: Box::new(Mask::new()),
             size: Vec2::new(width, height),
@@ -61,8 +67,14 @@ impl Canvas {
             None => shape.bounding_box(),
         };
 
+        if bb.is_empty() {
+            return;
+        }
+
         let tile_iter = TileIterator::<S>::new(self.size, bb);
         let stop = tile_iter.stop();
+
+        let sampler = texture.sampler(&self.bitmaps, &self.masks);
 
         for mut tile in tile_iter {
             let mut path_impl = PathImpl::<S> {
@@ -75,8 +87,17 @@ impl Canvas {
             shape.draw(&mut path_impl);
 
             if path_impl.mask_dirty {
+                use sampler::SamplerEnum::*;
                 self.mask.unpack();
-                tile.render(&mut self.pixels, self.size.x, stop, &self.mask, texture, &self.bitmaps);
+
+                match &sampler {
+                    Mask(s) => tile.render(&mut self.pixels, self.size.x, stop, &self.mask, s),
+                    Solid(s) => tile.render(&mut self.pixels, self.size.x, stop, &self.mask, s),
+                    Rainbow(s) => tile.render(&mut self.pixels, self.size.x, stop, &self.mask, s),
+                    ScaledBitmap(s) => tile.render(&mut self.pixels, self.size.x, stop, &self.mask, s),
+                    QuadBitmap(s) => tile.render(&mut self.pixels, self.size.x, stop, &self.mask, s),
+                }
+
                 self.mask.clear();
             }
         }
@@ -95,16 +116,17 @@ impl super::Canvas for Canvas {
 
     fn alloc_bitmap(&mut self, width: usize, height: usize) -> BitmapHandle {
         let pixels = vec![TRANSPARENT; width * height].into();
+        let handle = BitmapHandle(self.bitmaps.len());
         self.bitmaps.push(Bitmap {
             pixels,
             size: Vec2::new(width, height),
-        })
+        });
+        handle
     }
 
     fn fill_bitmap(&mut self, bitmap: BitmapHandle, x: usize, y: usize, w: usize, h: usize, buf: &[Color]) {
-        if let Some(bitmap) = self.bitmaps.get_mut(bitmap) {
-            let max_x = x + w;
-            let max_y = y + h;
+        if let Some(bitmap) = self.bitmaps.get_mut(bitmap.0) {
+            let (max_x, max_y) = (x + w, y + h);
 
             if max_x > bitmap.size.x || max_y > bitmap.size.y {
                 return;
@@ -112,8 +134,7 @@ impl super::Canvas for Canvas {
 
             for y_offset in 0..h {
                 for x_offset in 0..w {
-                    let x = x + x_offset;
-                    let y = y + y_offset;
+                    let (x, y) = (x + x_offset, y + y_offset);
                     let src_i = y_offset * w + x_offset;
                     let dst_i = y * bitmap.size.x + x;
                     bitmap.pixels[dst_i] = buf[src_i];
@@ -123,9 +144,45 @@ impl super::Canvas for Canvas {
     }
 
     fn free_bitmap(&mut self, bitmap: BitmapHandle) {
-        if let Some(bitmap) = self.bitmaps.get_mut(bitmap) {
+        if let Some(bitmap) = self.bitmaps.get_mut(bitmap.0) {
             bitmap.size = Vec2::new(0, 0);
             bitmap.pixels = Box::new([]);
+        }
+    }
+
+    fn alloc_mask(&mut self, width: usize, height: usize) -> MaskHandle {
+        let pixels = vec![0u8; width * height].into();
+        let handle = MaskHandle(self.masks.len());
+        self.masks.push(MaskImage {
+            pixels,
+            size: Vec2::new(width, height),
+        });
+        handle
+    }
+
+    fn fill_mask(&mut self, mask: MaskHandle, x: usize, y: usize, w: usize, h: usize, buf: &[u8]) {
+        if let Some(mask) = self.masks.get_mut(mask.0) {
+            let (max_x, max_y) = (x + w, y + h);
+
+            if max_x > mask.size.x || max_y > mask.size.y {
+                return;
+            }
+
+            for y_offset in 0..h {
+                for x_offset in 0..w {
+                    let (x, y) = (x + x_offset, y + y_offset);
+                    let src_i = y_offset * w + x_offset;
+                    let dst_i = y * mask.size.x + x;
+                    mask.pixels[dst_i] = buf[src_i];
+                }
+            }
+        }
+    }
+
+    fn free_mask(&mut self, mask: MaskHandle) {
+        if let Some(mask) = self.masks.get_mut(mask.0) {
+            mask.size = Vec2::new(0, 0);
+            mask.pixels = Box::new([]);
         }
     }
 
@@ -326,8 +383,8 @@ impl Collisions for ArcPrecomp {
 }
 
 pub(crate) fn cos_range(min_angle_magic: u32, max_angle_magic: u32, row_pos: bool) -> Option<RangeInclusive<f64>> {
-    let (min_cos, min_neg) = decode_magic(min_angle_magic);
-    let (max_cos, max_neg) = decode_magic(max_angle_magic);
+    let (min_cos, min_neg) = primitives::decode_magic(min_angle_magic);
+    let (max_cos, max_neg) = primitives::decode_magic(max_angle_magic);
 
     // row_pos = row < arc.center.y (its circle position is a positive angle)
 
