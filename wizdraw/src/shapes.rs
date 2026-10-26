@@ -111,23 +111,34 @@ impl Rectangle {
     pub fn rounded(points: [Point; 2], radius: f32) -> Self {
         Self { points, radius }
     }
+
+    pub fn abcd(self) -> [Point; 4] {
+        let [a, c] = self.points;
+        let b = Point::new(c.x, a.y);
+        let d = Point::new(a.x, c.y);
+        [a, b, c, d]
+    }
 }
 
 impl From<Rectangle> for Polygon<[Point; 4]> {
     fn from(rectangle: Rectangle) -> Self {
-        let [a, c] = rectangle.points;
-        let b = Point::new(c.x, a.y);
-        let d = Point::new(a.x, c.y);
         Self {
             radius: rectangle.radius,
-            points: [a, b, c, d],
+            points: rectangle.abcd(),
         }
     }
 }
 
 impl Shape for Rectangle {
     fn draw(&self, api: &mut dyn PathApi) {
-        Polygon::from(*self).draw(api);
+        if self.radius <= 0.0 {
+            // only draw the right and left sides
+            let [a, b, c, d] = self.abcd();
+            api.segment((a, d).into());
+            api.segment((b, c).into());
+        } else {
+            Polygon::from(*self).draw(api);
+        }
     }
 }
 

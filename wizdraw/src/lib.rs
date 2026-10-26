@@ -37,6 +37,9 @@ pub mod texture;
 pub mod cpu;
 pub use cpu::inside::shape_contains;
 
+/// Implementations of [`Canvas`] using only the CPU
+// pub mod cpu2;
+
 /// Implementations of [`Canvas`] using a GPU
 #[cfg(feature = "gles2")]
 pub mod gles2;
@@ -97,15 +100,16 @@ impl<T: Shape> Shape for &T {
 
 /// The trait that rendering backends must implement
 pub trait Canvas {
-    fn framebuffer_size(&self) -> Vec2<usize>;
+    fn set_size(&mut self, size: Vec2<usize>);
+    fn get_size(&self) -> Vec2<usize>;
 
     fn alloc_bitmap(&mut self, width: usize, height: usize) -> BitmapHandle;
     fn fill_bitmap(&mut self, bitmap: BitmapHandle, x: usize, y: usize, w: usize, h: usize, buf: &[Color]);
     fn free_bitmap(&mut self, bitmap: BitmapHandle);
 
     fn alloc_mask(&mut self, width: usize, height: usize) -> MaskHandle;
-    fn fill_mask(&mut self, bitmap: MaskHandle, x: usize, y: usize, w: usize, h: usize, buf: &[u8]);
-    fn free_mask(&mut self, bitmap: MaskHandle);
+    fn fill_mask(&mut self, mask: MaskHandle, x: usize, y: usize, w: usize, h: usize, buf: &[u8]);
+    fn free_mask(&mut self, mask: MaskHandle);
 
     fn clear(&mut self);
     fn fill(&mut self, shape: &dyn Shape, bb: Option<BoundingBox>, texture: &Texture, ssaa: SsaaConfig);

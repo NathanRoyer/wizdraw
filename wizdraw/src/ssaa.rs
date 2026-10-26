@@ -40,8 +40,8 @@ macro_rules! const_ssaa {
     }
 }
 
-const_ssaa!(NoSsaa,  0, 0,  0.000,  0.000, 0.00, 0.00);
-const_ssaa!(SsaaX2,  1, 0, -0.250,  0.000, 0.50, 0.00);
+const_ssaa!(NoSsaa,  0, 0,  0.000,  0.000, 1.00, 1.00);
+const_ssaa!(SsaaX2,  1, 0, -0.250,  0.000, 0.50, 1.00);
 const_ssaa!(SsaaX4,  1, 1, -0.250, -0.250, 0.50, 0.50);
 const_ssaa!(SsaaX8,  2, 1, -0.375, -0.250, 0.25, 0.50);
 const_ssaa!(SsaaX16, 2, 2, -0.375, -0.375, 0.25, 0.25);

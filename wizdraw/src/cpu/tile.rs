@@ -98,7 +98,6 @@ impl<S: ConstSsaa> Tile<S> {
 
         for y in y_min..y_max {
             let fb_line_offset = y * stride;
-            let y_base = y as f32 + S::Y_BIAS;
 
             if mask.empty_rows(mask_base.y, S::ROWS) {
                 mask_base.y = mask_base.y.wrapping_add(S::ROWS);
@@ -108,7 +107,7 @@ impl<S: ConstSsaa> Tile<S> {
             mask_base.x = 0;
 
             for x in x_min..x_max {
-                let x_base = x as f32 + S::X_BIAS;
+                let sample_point = Vec2::new(x as f32, y as f32);
                 let mut hit_mask = 0;
 
                 for ssaa_y in 0..S::ROWS {
@@ -119,41 +118,24 @@ impl<S: ConstSsaa> Tile<S> {
 
                 mask_base.x = mask_base.x.wrapping_add(S::COLS);
 
-                if hit_mask != 0 {
-                    let mut src = Color16::new(0, 0, 0, 0);
+                if hit_mask == 0 {
+                    continue;
+                }
 
-                    if T::FLAT {
-                        src = sampler.sample(Point::default());
-                    } else {
-                        let mut offset = Vec2::new(x_base, y_base);
+                let Some(mut src) = sampler.sample_ssaa::<S>(sample_point) else {
+                    continue;
+                };
 
-                        for _ in 0..S::ROWS {
-                            for _ in 0..S::COLS {
-                                src += sampler.sample(offset);
-                                offset.x += S::X_STEP;
-                            }
+                let px_i = fb_line_offset + x;
+                let dst = &mut pixels[px_i];
+                let full_hit = hit_mask == S::MASK;
 
-                            offset.y += S::Y_STEP;
-                            offset.x = x_base;
-                        }
-
-                        // divide by num_subpx
-                        src = src / (S::SUBP as u16);
-                    }
-
-                    if src.a != 0 {
-                        let px_i = fb_line_offset + x;
-                        let dst = &mut pixels[px_i];
-                        let full_hit = hit_mask == S::MASK;
-
-                        if full_hit && src.a == 255 {
-                            *dst = src.map(|c| c as u8);
-                        } else {
-                            src.a *= hit_mask.count_ones() as u16;
-                            src.a = src.a / (S::SUBP as u16);
-                            blend(src, dst);
-                        }
-                    }
+                if full_hit && src.a == 255 {
+                    *dst = src.map(|c| c as u8);
+                } else {
+                    src.a *= hit_mask.count_ones() as u16;
+                    src.a = src.a / (S::SUBP as u16);
+                    blend(src, dst);
                 }
             }
 
@@ -164,11 +146,6 @@ impl<S: ConstSsaa> Tile<S> {
 
 #[inline(always)]
 fn blend(src: Color16, dst: &mut Color) {
-    if src.a == 255 {
-        *dst = src.map(|c| c as u8);
-        return;
-    }
-
     let dst_a = 255u16 - src.a;
 
     let lerp = |src_c: u16, dst_c: u8| {

@@ -1,11 +1,33 @@
 use super::*;
 use vek::num_traits::Euclid;
 
-const TRANSPARENT: Color16 = Color16::new(0, 0, 0, 0);
-
 pub trait Sampler {
-    const FLAT: bool = false;
-    fn sample(&self, point: Point) -> Color16;
+    fn sample(&self, point: Point) -> Option<Color16>;
+
+    fn sample_ssaa<S: ConstSsaa>(&self, point: Point) -> Option<Color16> {
+        let mut offset = point + Vec2::new(S::X_BIAS, S::Y_BIAS);
+        let mut color = Color16::new(0, 0, 0, 0);
+
+        for _ in 0..S::ROWS {
+            for _ in 0..S::COLS {
+                if let Some(sample) = self.sample(offset) {
+                    color += sample;
+                }
+
+                offset.x += S::X_STEP;
+            }
+
+            offset.y += S::Y_STEP;
+            offset.x = point.x + S::X_BIAS;
+        }
+
+        if color.a == 0 {
+            return None;
+        }
+
+        // divide by num_subpx
+        Some(color / (S::SUBP as u16))
+    }
 }
 
 //////////////////////////////////////////////////////////
@@ -13,9 +35,12 @@ pub trait Sampler {
 pub struct SolidSampler(Color16);
 
 impl Sampler for SolidSampler {
-    const FLAT: bool = true;
-    fn sample(&self, _point: Point) -> Color16 {
-        self.0
+    fn sample(&self, _point: Point) -> Option<Color16> {
+        Some(self.0)
+    }
+
+    fn sample_ssaa<S: ConstSsaa>(&self, _point: Point) -> Option<Color16> {
+        Some(self.0)
     }
 }
 
@@ -25,7 +50,7 @@ pub struct RainbowSampler;
 
 impl Sampler for RainbowSampler {
     #[inline(always)]
-    fn sample(&self, point: Point) -> Color16 {
+    fn sample(&self, point: Point) -> Option<Color16> {
         const RAINBOW: [Color16; 8] = [
             Color16::new(255,   0,   0, 255),
             Color16::new(255, 127,   0, 255),
@@ -40,7 +65,7 @@ impl Sampler for RainbowSampler {
         let point = point.map(|f| f as usize);
         let i = ((point.x + point.y) & 127) >> 4;
 
-        RAINBOW[i]
+        Some(RAINBOW[i])
     }
 }
 
@@ -58,21 +83,23 @@ pub struct MaskSampler<'a> {
 
 impl<'a> MaskSampler<'a> {
     #[inline(always)]
-    fn sample(&self, texture_offset: Point) -> Color16 {
+    fn sample(&self, texture_offset: Point) -> Option<Color16> {
         let x = texture_offset.x as usize;
         let y = texture_offset.y as usize;
         let i = y * self.mask.size.x + x;
-        let f_factor = self.mask.pixels.get(i).copied().unwrap_or(0);
-        let z_factor = 255 - f_factor;
+        let f_factor = *self.mask.pixels.get(i)?;
         let mut full = self.full;
 
         if let Some(zero) = self.zero {
+            let z_factor = 255 - f_factor;
             let full_part = full.map(|c| (f_factor as u16) * c / 255u16);
             let zero_part = zero.map(|c| (z_factor as u16) * c / 255u16);
-            full_part + zero_part
+            Some(full_part + zero_part)
+        } else if f_factor == 255 {
+            Some(full)
         } else {
             full.a = (f_factor as u16) * full.a / 255u16;
-            full
+            Some(full)
         }
     }
 
@@ -104,7 +131,7 @@ impl<'a> MaskSampler<'a> {
 
 impl Sampler for MaskSampler<'_> {
     #[inline(always)]
-    fn sample(&self, point: Point) -> Color16 {
+    fn sample(&self, point: Point) -> Option<Color16> {
         let mut offset = point - self.top_left;
 
         if self.repeat {
@@ -115,7 +142,7 @@ impl Sampler for MaskSampler<'_> {
 
             if invalid_x || invalid_y {
                 // out of bounds
-                return TRANSPARENT;
+                return None;
             }
         }
 
@@ -127,15 +154,13 @@ impl Sampler for MaskSampler<'_> {
 
 impl Bitmap {
     #[inline(always)]
-    fn sample(&self, texture_offset: Point) -> Color16 {
+    fn sample(&self, texture_offset: Point) -> Option<Color16> {
         let x = texture_offset.x as usize;
         let y = texture_offset.y as usize;
         let i = y * self.size.x + x;
 
-        match self.pixels.get(i) {
-            Some(c) => Color16::from(*c),
-            None => TRANSPARENT,
-        }
+        let c = self.pixels.get(i)?;
+        Some(Color16::from(*c))
     }
 }
 
@@ -172,7 +197,7 @@ impl<'a> ScaledSampler<'a> {
 
 impl Sampler for ScaledSampler<'_> {
     #[inline(always)]
-    fn sample(&self, point: Point) -> Color16 {
+    fn sample(&self, point: Point) -> Option<Color16> {
         let mut offset = point - self.top_left;
 
         if self.repeat {
@@ -183,7 +208,7 @@ impl Sampler for ScaledSampler<'_> {
 
             if invalid_x || invalid_y {
                 // out of bounds
-                return TRANSPARENT;
+                return None;
             }
         }
 
@@ -223,22 +248,20 @@ impl<'a> QuadSampler<'a> {
 
 impl Sampler for QuadSampler<'_> {
     #[inline(always)]
-    fn sample(&self, point: Point) -> Color16 {
+    fn sample(&self, point: Point) -> Option<Color16> {
         if !self.bb.contains(point) {
-            return TRANSPARENT;
+            return None;
         }
 
         if !point_in_quad(point, self.quad) {
-            return TRANSPARENT;
+            return None;
         }
 
-        let Some(uv) = self.bili.inverse_bilinear(point) else {
-            return TRANSPARENT;
-        };
-
+        let uv = self.bili.inverse_bilinear(point)?;
         let w = self.bitmap.size.x as f32;
         let h = self.bitmap.size.y as f32;
-        self.bitmap.sample(Point::new(uv.x * w, uv.y * h))
+        let xy = Point::new(uv.x * w, uv.y * h);
+        self.bitmap.sample(xy)
     }
 }
 
@@ -253,7 +276,7 @@ pub enum SamplerEnum<'a> {
 }
 
 impl Texture<'_> {
-    pub(super) fn sampler<'a>(&'a self, bitmaps: &'a [Bitmap], masks: &'a [MaskImage]) -> SamplerEnum<'a> {
+    pub(crate) fn sampler<'a>(&'a self, bitmaps: &'a [Bitmap], masks: &'a [MaskImage]) -> SamplerEnum<'a> {
         let rainbow = SamplerEnum::Rainbow(RainbowSampler);
 
         match self {

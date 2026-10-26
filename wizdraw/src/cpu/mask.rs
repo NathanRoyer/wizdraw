@@ -46,7 +46,7 @@ impl Mask {
             for dword in row.iter_mut().rev() {
                 if *dword == 0 {
                     if drawing {
-                        *dword = !0u32;
+                        *dword = 0xffffffff;
                     }
 
                     continue;

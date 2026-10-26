@@ -9,7 +9,7 @@ use glow::{
     VERTEX_SHADER, FRAGMENT_SHADER, TEXTURE_2D, TEXTURE_MAG_FILTER, TEXTURE_MIN_FILTER,
     LINEAR, RGBA, FRAMEBUFFER, BLEND, FUNC_ADD, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DEPTH_TEST,
     FLOAT, ARRAY_BUFFER, COLOR_BUFFER_BIT, RENDERBUFFER, RGBA8, COLOR_ATTACHMENT0,
-    DYNAMIC_DRAW, FRAMEBUFFER_COMPLETE, TRIANGLE_STRIP, TEXTURE0, TEXTURE1,
+    DYNAMIC_DRAW, FRAMEBUFFER_COMPLETE, TRIANGLE_STRIP, TEXTURE0, TEXTURE1, RED,
 };
 
 use glow::UNSIGNED_SHORT_5_5_5_1 as RGBA5551;
@@ -27,6 +27,24 @@ struct TexData {
     size: Vec2<i32>,
 }
 
+struct Uniforms {
+    mask_input_buf: glow::NativeUniformLocation,
+    mask_input_len: glow::NativeUniformLocation,
+    mask_blank: glow::NativeUniformLocation,
+    mask_height: glow::NativeUniformLocation,
+    mask_offset: glow::NativeUniformLocation,
+
+    color_height: glow::NativeUniformLocation,
+    color_offset: glow::NativeUniformLocation,
+    color_mode: glow::NativeUniformLocation,
+    color_param_1: glow::NativeUniformLocation,
+    color_param_2: glow::NativeUniformLocation,
+    color_zero_color: glow::NativeUniformLocation,
+    color_full_color: glow::NativeUniformLocation,
+    color_tex_size: glow::NativeUniformLocation,
+    color_tex_tile_offset: glow::NativeUniformLocation,
+}
+
 pub struct Canvas {
     gl: Context,
     mask_program: Program,
@@ -37,27 +55,43 @@ pub struct Canvas {
     mask_fb: Framebuffer,
     fb_size: Vec2<i32>,
     color_buf: Vec<Color>,
+    mask_buf: Vec<u8>,
     textures: Vec<TexData>,
+    masks: Vec<TexData>,
+    uniforms: Uniforms,
 }
 
 impl super::Canvas for Canvas {
-    fn framebuffer_size(&self) -> Vec2<usize> {
+    fn get_size(&self) -> Vec2<usize> {
         self.fb_size.map(|n| n as _)
     }
 
-    fn alloc_bitmap(&mut self, width: usize, height: usize) -> BitmapHandle {
-        let index = self.textures.len();
-        let mut tiles = Vec::new();
+    fn set_size(&mut self, size: Vec2<usize>) {
+        self.fb_size = size.map(|n| n as _);
 
-        for y in (0..width).step_by(256) {
-            for x in (0..height).step_by(256) {
-                let Ok(tex_id) = (unsafe { init_texture(&self.gl) }) else {
+        if self.render_fb.is_some() {
+            unsafe {
+                self.gl.renderbuffer_storage(RENDERBUFFER, RGBA8, self.fb_size.x, self.fb_size.y);
+            }
+        }
+    }
+
+    fn alloc_bitmap(&mut self, width: usize, height: usize) -> BitmapHandle {
+        let mut tiles = Vec::new();
+        let side = 64;
+
+        let tiles_x = width.div_ceil(side);
+        let tiles_y = height.div_ceil(side);
+
+        for y in 0..tiles_y {
+            for x in 0..tiles_x {
+                let Ok(tex_id) = (unsafe { init_texture(&self.gl, false) }) else {
                     // error!
                     return BitmapHandle(usize::MAX);
                 };
 
                 let tile = TexTile {
-                    offset: Vec2::new(x, y),
+                    offset: Vec2::new(x, y) * side,
                     tex_id,
                 };
 
@@ -70,6 +104,7 @@ impl super::Canvas for Canvas {
             size: Vec2::new(width as i32, height as i32),
         };
 
+        let index = self.textures.len();
         self.textures.push(tex_data);
         BitmapHandle(index)
     }
@@ -78,10 +113,10 @@ impl super::Canvas for Canvas {
         let tiles = &self.textures[bitmap.0].tiles;
         let (max_x, max_y) = (x + w, y + h);
 
-        self.color_buf.resize(256 * 256, Color::default());
+        self.color_buf.resize(64 * 64, Color::default());
 
         for tile in tiles {
-            let tile_max = tile.offset + Vec2::new(256, 256);
+            let tile_max = tile.offset + Vec2::new(64, 64);
 
             let x_overlap = (max_x >= tile.offset.x) & (x < tile_max.x);
             let y_overlap = (max_y >= tile.offset.y) & (y < tile_max.y);
@@ -110,7 +145,7 @@ impl super::Canvas for Canvas {
                 self.gl.active_texture(TEXTURE0);
                 self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
 
-                let (x, y) = ((x_start % 256) as i32, (y_start % 256) as i32);
+                let (x, y) = ((x_start % 64) as i32, (y_start % 64) as i32);
                 let (w, h) = ((x_stop - x_start) as i32, (y_stop - y_start) as i32);
 
                 let src = rgb::bytemuck::cast_slice(&*self.color_buf);
@@ -124,6 +159,93 @@ impl super::Canvas for Canvas {
 
     fn free_bitmap(&mut self, bitmap: BitmapHandle) {
         let tiles = take(&mut self.textures[bitmap.0].tiles);
+        for tex_tile in tiles {
+            unsafe { self.gl.delete_texture(tex_tile.tex_id) };
+        }
+    }
+
+    fn alloc_mask(&mut self, width: usize, height: usize) -> MaskHandle {
+        let mut tiles = Vec::new();
+        let side = 64;
+
+        let tiles_x = width.div_ceil(side);
+        let tiles_y = height.div_ceil(side);
+
+        for y in 0..tiles_y {
+            for x in 0..tiles_x {
+                let Ok(tex_id) = (unsafe { init_texture(&self.gl, true) }) else {
+                    // error!
+                    return MaskHandle(usize::MAX);
+                };
+
+                let tile = TexTile {
+                    offset: Vec2::new(x, y) * side,
+                    tex_id,
+                };
+
+                tiles.push(tile);
+            }
+        }
+
+        let tex_data = TexData {
+            tiles: tiles.into(),
+            size: Vec2::new(width as i32, height as i32),
+        };
+
+        let index = self.masks.len();
+        self.masks.push(tex_data);
+        MaskHandle(index)
+    }
+
+    fn fill_mask(&mut self, mask: MaskHandle, x: usize, y: usize, w: usize, h: usize, buf: &[u8]) {
+        let tiles = &self.masks[mask.0].tiles;
+        let (max_x, max_y) = (x + w, y + h);
+
+        self.mask_buf.resize(64 * 64, 0u8);
+
+        for tile in tiles {
+            let tile_max = tile.offset + Vec2::new(64, 64);
+
+            let x_overlap = (max_x >= tile.offset.x) & (x < tile_max.x);
+            let y_overlap = (max_y >= tile.offset.y) & (y < tile_max.y);
+
+            if !(x_overlap & y_overlap) {
+                continue;
+            }
+
+            let x_start = x.max(tile.offset.x);
+            let y_start = y.max(tile.offset.y);
+            let x_stop = max_x.min(tile_max.x);
+            let y_stop = max_y.min(tile_max.y);
+
+            let mut i = 0;
+            for tex_y in y_start..y_stop {
+                for tex_x in x_start..x_stop {
+                    let (src_x, src_y) = (tex_x - x, tex_y - y);
+                    let src_i = src_y * w + src_x;
+
+                    self.mask_buf[i] = buf[src_i];
+                    i += 1;
+                }
+            }
+
+            unsafe {
+                self.gl.active_texture(TEXTURE0);
+                self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
+
+                let (x, y) = ((x_start % 64) as i32, (y_start % 64) as i32);
+                let (w, h) = ((x_stop - x_start) as i32, (y_stop - y_start) as i32);
+
+                let src = PixelUnpackData::Slice(Some(&self.mask_buf));
+                self.gl.tex_sub_image_2d(TEXTURE_2D, 0, x, y, w, h, RED, RGBA8888, src);
+
+                debug(&self.gl, "tex_sub_image_2d");
+            }
+        }
+    }
+
+    fn free_mask(&mut self, mask: MaskHandle) {
+        let tiles = take(&mut self.masks[mask.0].tiles);
         for tex_tile in tiles {
             unsafe { self.gl.delete_texture(tex_tile.tex_id) };
         }
@@ -145,13 +267,17 @@ impl super::Canvas for Canvas {
             None => shape.bounding_box(),
         };
 
+        if bb.is_empty() {
+            return;
+        }
+
         let height = self.fb_size.y as f32;
 
-        for y in (0..self.fb_size.y).step_by(256) {
-            for x in (0..self.fb_size.x).step_by(256) {
+        for y in (0..self.fb_size.y).step_by(64) {
+            for x in (0..self.fb_size.x).step_by(64) {
                 let y_flipped = height - (y as f32);
-                let (x_min, y_min) = (x as f32, y_flipped - 256.0);
-                let (x_max, y_max) = (x_min + 256.0, y_flipped);
+                let (x_min, y_min) = (x as f32, y_flipped - 64.0);
+                let (x_max, y_max) = (x_min + 64.0, y_flipped);
 
                 let x_overlap = (bb.min.x < x_max) & (bb.max.x >= x_min);
                 let y_overlap = (bb.min.y < y_max) & (bb.max.y >= y_min);
@@ -165,7 +291,7 @@ impl super::Canvas for Canvas {
         }
 
         unsafe {
-            self.gl.flush();
+            // self.gl.flush();
             debug(&self.gl, "flush");
         }
     }
@@ -183,28 +309,26 @@ unsafe fn init_shader(gl: &Context, shader_type: u32, src: &str) -> Result<Shade
     }
 }
 
-unsafe fn init_texture(gl: &Context) -> Result<GlTexture, String> {
+unsafe fn init_texture(gl: &Context, mask: bool) -> Result<GlTexture, String> {
     let tex = gl.create_texture()?;
     gl.active_texture(TEXTURE0);
     gl.bind_texture(TEXTURE_2D, Some(tex));
     gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MIN_FILTER, LINEAR as i32);
     gl.tex_parameter_i32(TEXTURE_2D, TEXTURE_MAG_FILTER, LINEAR as i32);
 
-    static TEX_BUF: [u8; 262144] = [0u8; 262144];
+    let (internal_fmt, element_len) = match mask {
+        true => (RED, 1),
+        false => (RGBA, 4),
+    };
 
-    let side = 256;
-    let data = PixelUnpackData::Slice(Some(&TEX_BUF));
+    let side = 64;
+    let side_i32 = side as i32;
+    let data_buf = vec![0u8; side * side * element_len];
+    let data = PixelUnpackData::Slice(Some(&data_buf));
 
     gl.tex_image_2d(
-        TEXTURE_2D,
-        0,
-        RGBA as i32,
-        side,
-        side,
-        0,
-        RGBA,
-        RGBA8888,
-        data,
+        TEXTURE_2D, 0, internal_fmt as i32, side_i32, side_i32,
+        0, internal_fmt, RGBA8888, data,
     );
 
     debug(&gl, "init_texture");
@@ -241,11 +365,11 @@ unsafe fn init_program(gl: &Context, v_shader: &str, f_shader: &str, name: &str)
     Ok(program)
 }
 
-const DRAW_THRESHOLD: i32 = 80;
+const DRAW_THRESHOLD: usize = 80;
 
 struct PathImpl<'a> {
     canvas: &'a mut Canvas,
-    input_buf: [f32; 80],
+    input_buf: [f32; DRAW_THRESHOLD],
     input_len: i32,
     blank: bool,
 }
@@ -260,7 +384,7 @@ impl PathImpl<'_> {
 
         self.input_len += 5;
 
-        if self.input_len == DRAW_THRESHOLD {
+        if self.input_len == (DRAW_THRESHOLD as i32) {
             self.draw_call();
         }
     }
@@ -270,12 +394,12 @@ impl PathImpl<'_> {
             let buf_len = self.input_len as usize;
             let input_buf = &self.input_buf[..buf_len];
 
-            let loc = self.canvas.gl.get_uniform_location(self.canvas.mask_program, "input_buf");
-            self.canvas.gl.uniform_1_f32_slice(loc.as_ref(), input_buf);
+            let loc = Some(&self.canvas.uniforms.mask_input_buf);
+            self.canvas.gl.uniform_1_f32_slice(loc, input_buf);
             debug(&self.canvas.gl, "input_buf");
 
-            let loc = self.canvas.gl.get_uniform_location(self.canvas.mask_program, "input_len");
-            self.canvas.gl.uniform_1_i32(loc.as_ref(), self.input_len);
+            let loc = Some(&self.canvas.uniforms.mask_input_len);
+            self.canvas.gl.uniform_1_i32(loc, self.input_len);
             debug(&self.canvas.gl, "input_len");
 
             self.canvas.gl.active_texture(TEXTURE0);
@@ -291,8 +415,8 @@ impl PathImpl<'_> {
             swap(&mut self.canvas.mask_src, &mut self.canvas.mask_dst);
 
             if self.blank {
-                let init_loc = self.canvas.gl.get_uniform_location(self.canvas.mask_program, "blank");
-                self.canvas.gl.uniform_1_i32(init_loc.as_ref(), 0);
+                let init_loc = Some(&self.canvas.uniforms.mask_blank);
+                self.canvas.gl.uniform_1_i32(init_loc, 0);
                 debug(&self.canvas.gl, "blank_0");
                 self.blank = false;
             }
@@ -317,8 +441,8 @@ impl PathApi for PathImpl<'_> {
             false => arc.radius,
         };
 
-        let (mut min_cos, min_neg) = decode_magic(arc.min_angle_magic);
-        let (mut max_cos, max_neg) = decode_magic(arc.max_angle_magic);
+        let (mut min_cos, min_neg) = primitives::decode_magic(arc.min_angle_magic);
+        let (mut max_cos, max_neg) = primitives::decode_magic(arc.max_angle_magic);
         if min_neg { min_cos += 4.0; }
         if max_neg { max_cos += 4.0; }
 
@@ -350,9 +474,9 @@ impl Canvas {
             gl.uniform_1_i32(loc.as_ref(), 0);
             debug(&gl, "opacity texture");
 
-            let loc = gl.get_uniform_location(color_program, "bmp_tile");
+            let loc = gl.get_uniform_location(color_program, "tex_tile");
             gl.uniform_1_i32(loc.as_ref(), 1);
-            debug(&gl, "bmp_tile texture");
+            debug(&gl, "tex_tile texture");
 
             let Some(mask_attr) = gl.get_attrib_location(mask_program, "a_position") else {
                 return Err("Failed to locate a_position attribute".into());
@@ -376,8 +500,8 @@ impl Canvas {
             let pos_u8: [u8; 8 * 4] = from_fn(|i| pos[i / 4].to_ne_bytes()[i % 4]);
             gl.buffer_data_u8_slice(ARRAY_BUFFER, &pos_u8, DYNAMIC_DRAW);
 
-            let mask_src = init_texture(&gl)?;
-            let mask_dst = init_texture(&gl)?;
+            let mask_src = init_texture(&gl, false)?;
+            let mask_dst = init_texture(&gl, false)?;
             let mask_fb = gl.create_framebuffer()?;
 
             gl.enable(BLEND);
@@ -415,7 +539,33 @@ impl Canvas {
             // todo: check actual renderbuffer format
             // todo: maybe try OES_rgb8_rgba8 extension
 
-            let color_buf = vec![Color::new(0, 0, 0, 0); 256 * 256].into();
+            let color_buf = vec![Color::new(0, 0, 0, 0); 64 * 64].into();
+            let mask_buf = vec![0u8; 64 * 64].into();
+
+            let loc = |program, name, pname| {
+                match gl.get_uniform_location(program, name) {
+                    Some(thing) => thing,
+                    None => panic!("uniform {name} was not found in {pname} program"),
+                }
+            };
+
+            let uniforms = Uniforms {
+                mask_input_buf: loc(mask_program, "input_buf", "mask"),
+                mask_input_len: loc(mask_program, "input_len", "mask"),
+                mask_blank: loc(mask_program, "blank", "mask"),
+                mask_height: loc(mask_program, "height", "mask"),
+                mask_offset: loc(mask_program, "offset", "mask"),
+
+                color_height: loc(color_program, "height", "color"),
+                color_offset: loc(color_program, "offset", "color"),
+                color_mode: loc(color_program, "mode", "color"),
+                color_param_1: loc(color_program, "param_1", "color"),
+                color_param_2: loc(color_program, "param_2", "color"),
+                color_zero_color: loc(color_program, "zero_color", "color"),
+                color_full_color: loc(color_program, "full_color", "color"),
+                color_tex_size: loc(color_program, "tex_size", "color"),
+                color_tex_tile_offset: loc(color_program, "tex_tile_offset", "color"),
+            };
 
             Ok(Self {
                 gl,
@@ -427,7 +577,10 @@ impl Canvas {
                 mask_fb,
                 fb_size,
                 color_buf,
+                mask_buf,
                 textures: Vec::new(),
+                masks: Vec::new(),
+                uniforms,
             })
         }
     }
@@ -441,24 +594,24 @@ impl Canvas {
             self.gl.use_program(Some(self.mask_program));
             debug(&self.gl, "use_program");
 
-            let init_loc = self.gl.get_uniform_location(self.mask_program, "blank");
-            self.gl.uniform_1_i32(init_loc.as_ref(), 1);
+            let loc = Some(&self.uniforms.mask_blank);
+            self.gl.uniform_1_i32(loc, 1);
             debug(&self.gl, "blank_1");
 
-            let loc = self.gl.get_uniform_location(self.mask_program, "height");
-            self.gl.uniform_1_f32(loc.as_ref(), self.fb_size.y as f32);
+            let loc = Some(&self.uniforms.mask_height);
+            self.gl.uniform_1_f32(loc, self.fb_size.y as f32);
             debug(&self.gl, "height");
 
-            let loc = self.gl.get_uniform_location(self.mask_program, "offset");
-            self.gl.uniform_2_f32(loc.as_ref(), x as f32, y as f32);
+            let loc = Some(&self.uniforms.mask_offset);
+            self.gl.uniform_2_f32(loc, x as f32, y as f32);
             debug(&self.gl, "offset");
 
-            self.gl.viewport(0, 0, 256, 256);
+            self.gl.viewport(0, 0, 64, 64);
             debug(&self.gl, "viewport");
 
             let mut path_impl = PathImpl {
                 canvas: self,
-                input_buf: [0.0; 80],
+                input_buf: [0.0; DRAW_THRESHOLD],
                 input_len: 0,
                 blank: true,
             };
@@ -470,13 +623,35 @@ impl Canvas {
             }
         }
 
-        let (mode, param_1, param_2, bitmap) = match texture {
+        let mut z_col = [0u8; 4];
+        let mut f_col = [0u8; 4];
+
+        let (mode, param_1, param_2, mask_tex, bitmap) = match texture {
             Texture::SolidColor(color) => {
                 let color = color.map(|c| c as f32);
-                (0, color.into(), [0.0; 4], None)
+                (0, color.into(), [0.0; 4], None, None)
             },
             Texture::Gradient(_slice) => todo!(),
-            Texture::Debug => (2, [0.0; 4], [0.0; 4], None),
+            Texture::Debug => (2, [0.0; 4], [0.0; 4], None, None),
+            Texture::Mask {
+                top_left,
+                scale,
+                repeat,
+                mask,
+                zero,
+                full,
+            } => {
+                let mut r = *repeat as u32 as f32;
+                f_col = (*full).into();
+
+                if let Some(c) = *zero {
+                    r += 4.0;
+                    z_col = c.into();
+                }
+
+                let param_1 = [top_left.x, top_left.y, *scale, r];
+                (3, param_1, [0.0; 4], Some(mask.0), None)
+            },
             Texture::Bitmap {
                 top_left,
                 scale,
@@ -485,7 +660,7 @@ impl Canvas {
             } => {
                 let r = *repeat as u32 as f32;
                 let param_1 = [top_left.x, top_left.y, *scale, r];
-                (3, param_1, [0.0; 4], Some(bitmap))
+                (4, param_1, [0.0; 4], None, Some(bitmap.0))
             },
             Texture::QuadBitmap {
                 top_left,
@@ -496,7 +671,7 @@ impl Canvas {
             } => {
                 let param_1 = [top_left.x, top_left.y, btm_left.x, btm_left.y];
                 let param_2 = [top_right.x, top_right.y, btm_right.x, btm_right.y];
-                (4, param_1, param_2, Some(bitmap))
+                (5, param_1, param_2, None, Some(bitmap.0))
             },
         };
 
@@ -505,47 +680,59 @@ impl Canvas {
             self.gl.use_program(Some(self.color_program));
             debug(&self.gl, "[color] use_program");
 
-            let loc = self.gl.get_uniform_location(self.color_program, "height");
-            self.gl.uniform_1_f32(loc.as_ref(), self.fb_size.y as f32);
+            let loc = Some(&self.uniforms.color_height);
+            self.gl.uniform_1_f32(loc, self.fb_size.y as f32);
             debug(&self.gl, "[color] height");
 
-            let loc = self.gl.get_uniform_location(self.color_program, "offset");
-            self.gl.uniform_2_f32(loc.as_ref(), x as f32, y as f32);
+            let loc = Some(&self.uniforms.color_offset);
+            self.gl.uniform_2_f32(loc, x as f32, y as f32);
             debug(&self.gl, "[color] offset");
 
-            let loc = self.gl.get_uniform_location(self.color_program, "mode");
-            self.gl.uniform_1_i32(loc.as_ref(), mode);
+            let loc = Some(&self.uniforms.color_mode);
+            self.gl.uniform_1_i32(loc, mode);
             debug(&self.gl, "[color] mode");
 
-            let loc = self.gl.get_uniform_location(self.color_program, "param_1");
-            self.gl.uniform_4_f32_slice(loc.as_ref(), &param_1);
+            let loc = Some(&self.uniforms.color_param_1);
+            self.gl.uniform_4_f32_slice(loc, &param_1);
             debug(&self.gl, "[color] param_1");
 
-            let loc = self.gl.get_uniform_location(self.color_program, "param_2");
-            self.gl.uniform_4_f32_slice(loc.as_ref(), &param_2);
+            let loc = Some(&self.uniforms.color_param_2);
+            self.gl.uniform_4_f32_slice(loc, &param_2);
             debug(&self.gl, "[color] param_2");
+
+            let loc = Some(&self.uniforms.color_zero_color);
+            self.gl.uniform_4_i32_slice(loc, &z_col.map(|b| b as i32));
+            debug(&self.gl, "[color] zero_color");
+
+            let loc = Some(&self.uniforms.color_full_color);
+            self.gl.uniform_4_i32_slice(loc, &f_col.map(|b| b as i32));
+            debug(&self.gl, "[color] full_color");
 
             self.gl.active_texture(TEXTURE0);
             self.gl.bind_texture(TEXTURE_2D, Some(self.mask_src));
             self.gl.bind_framebuffer(FRAMEBUFFER, self.render_fb);
-                debug(&self.gl, "[color] framebuffer_texture_2d");
+            debug(&self.gl, "[color] framebuffer_texture_2d");
 
-            self.gl.viewport(x, y, 256, 256);
+            self.gl.viewport(x, y, 64, 64);
 
-            if let Some(bitmap) = bitmap {
-                let bitmap = &self.textures[bitmap.0];
+            let tex_data = match (bitmap, mask_tex) {
+                (Some(index), _) => Some(&self.textures[index]),
+                (None, Some(index)) => Some(&self.masks[index]),
+                _ => None,
+            };
 
-                let loc = self.gl.get_uniform_location(self.color_program, "bmp_size");
-                self.gl.uniform_2_f32(loc.as_ref(), bitmap.size.x as _, bitmap.size.y as _);
-                debug(&self.gl, "[color] bmp_size");
+            if let Some(tex_data) = tex_data {
+                let loc = Some(&self.uniforms.color_tex_size);
+                self.gl.uniform_2_f32(loc, tex_data.size.x as _, tex_data.size.y as _);
+                debug(&self.gl, "[color] tex_size");
 
-                for tile in &bitmap.tiles {
+                for tile in &tex_data.tiles {
                     self.gl.active_texture(TEXTURE1);
                     self.gl.bind_texture(TEXTURE_2D, Some(tile.tex_id));
 
-                    let loc = self.gl.get_uniform_location(self.color_program, "bmp_tile_offset");
-                    self.gl.uniform_2_f32(loc.as_ref(), tile.offset.x as _, tile.offset.y as _);
-                    debug(&self.gl, "[color] bmp_tile_offset");
+                    let loc = Some(&self.uniforms.color_tex_tile_offset);
+                    self.gl.uniform_2_f32(loc, tile.offset.x as _, tile.offset.y as _);
+                    debug(&self.gl, "[color] tex_tile_offset");
 
                     // use the square from Self::init()
                     let (offset, count) = (0, 4);

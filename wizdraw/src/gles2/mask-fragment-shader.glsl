@@ -1,8 +1,9 @@
 #version 100
 precision highp float;
 
-const float TEXTURE_SIZE = 256.0;
+const float TEXTURE_SIZE = 64.0;
 const float PI = 3.1415926538;
+const float Y_BIAS = 0.11;
 
 uniform sampler2D prev_iteration;
 uniform float height;
@@ -98,7 +99,7 @@ void main() {
     win_pos.x += offset.x;
 
     // texture vertical flip
-    win_pos.y = height - win_pos.y;
+    win_pos.y = height - win_pos.y + Y_BIAS;
 
     for (int i = 0; i < 80; i += 5) {
         if (i >= input_len) break;

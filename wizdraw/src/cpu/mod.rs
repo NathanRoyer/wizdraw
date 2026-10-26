@@ -17,15 +17,15 @@ use mask::Mask;
 type Color16 = rgb::RGBA::<u16>;
 
 #[derive(Debug, Clone)]
-struct Bitmap {
-    size: Vec2<usize>,
-    pixels: Box<[Color]>,
+pub(crate) struct Bitmap {
+    pub(crate) size: Vec2<usize>,
+    pub(crate) pixels: Box<[Color]>,
 }
 
 #[derive(Debug, Clone)]
-struct MaskImage {
-    size: Vec2<usize>,
-    pixels: Box<[u8]>,
+pub(crate) struct MaskImage {
+    pub(crate) size: Vec2<usize>,
+    pub(crate) pixels: Box<[u8]>,
 }
 
 /// Drawing Surface
@@ -49,12 +49,6 @@ impl Canvas {
             mask: Box::new(Mask::new()),
             size: Vec2::new(width, height),
         }
-    }
-
-    pub fn resize(&mut self, width: usize, height: usize) {
-        let sz = width * height;
-        self.size = Vec2::new(width, height);
-        self.pixels = vec![Default::default(); sz].into();
     }
 
     pub fn pixels(&self) -> &[Color] {
@@ -105,13 +99,19 @@ impl Canvas {
 }
 
 impl super::Canvas for Canvas {
+    fn set_size(&mut self, size: Vec2<usize>) {
+        self.size = size;
+        let len = size.x * size.y;
+        self.pixels = vec![Default::default(); len].into();
+    }
+
+    fn get_size(&self) -> Vec2<usize> {
+        self.size
+    }
+
     /// Sets all pixels to fully transparent
     fn clear(&mut self) {
         self.pixels.fill(Default::default());
-    }
-
-    fn framebuffer_size(&self) -> Vec2<usize> {
-        self.size
     }
 
     fn alloc_bitmap(&mut self, width: usize, height: usize) -> BitmapHandle {
